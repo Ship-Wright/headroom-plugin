@@ -38,7 +38,7 @@ Merge this into `~/.claude/settings.json` (global). This exact block is verified
 "statusLine": {
   "type": "command",
   "command": "tp=$(jq -r '.transcript_path // empty' 2>/dev/null); n=0; if [ -n \"$tp\" ] && [ -f \"$tp\" ]; then n=$(jq -s '[.[]|select(.message.content)|.message.content[]?|select(.type==\"tool_use\" and .name==\"mcp__headroom__headroom_compress\")]|length' \"$tp\" 2>/dev/null); fi; n=${n:-0}; if [ \"$n\" -gt 0 ] 2>/dev/null; then printf '\\033[32m● headroom active — %s compression%s\\033[0m' \"$n\" \"$([ \"$n\" -eq 1 ] || echo s)\"; else printf '\\033[31m○ headroom idle (not compressing yet)\\033[0m'; fi",
-  "refreshInterval": 5
+  "refreshInterval": 1
 }
 ```
 
@@ -61,7 +61,7 @@ data["statusLine"] = {
         "printf '\\033[32m● headroom active — %s compression%s\\033[0m' \"$n\" \"$([ \"$n\" -eq 1 ] || echo s)\"; "
         "else printf '\\033[31m○ headroom idle (not compressing yet)\\033[0m'; fi"
     ),
-    "refreshInterval": 5,
+    "refreshInterval": 1,
 }
 p.parent.mkdir(parents=True, exist_ok=True)
 p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
