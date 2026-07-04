@@ -15,11 +15,11 @@ It detects **real usage** from the session transcript (counting `tool_use` calls
 ## Install
 
 ```
-/plugin marketplace add <owner>/headroom-plugin
+/plugin marketplace add Ship-Wright/headroom-plugin
 /plugin install headroom-usage-indicator@headroom-tools
 ```
 
-Replace `<owner>/headroom-plugin` with wherever you push this repo (e.g. `abhishek/headroom-plugin`), or use a local path:
+Or from a local checkout:
 
 ```
 /plugin marketplace add ~/Desktop/headroom-plugin
