@@ -10,7 +10,7 @@ No more wondering *"did I remember to compress that huge file, or did I just bur
 
 This package does **not** compress anything by itself. It only *shows* whether **headroom** is working. So there are two separate pieces, in order:
 
-1. **headroom** — the MCP server that actually does the compression. **You must install and register this in Claude Code first** (however you obtained it — the offline/local headroom MCP). It's working when its tools show up as `mcp__headroom__headroom_compress`.
+1. **headroom** — the MCP server that actually does the compression. **You must install and register this in Claude Code first.** → https://github.com/headroomlabs-ai/headroom  It's working when its tools show up as `mcp__headroom__headroom_compress`.
 2. **this package** (`headroom-usage-indicator`) — the little status-line badge that watches headroom and reports on it.
 
 > Think of it like a fuel gauge: **headroom is the engine, this package is the gauge.** A gauge with no engine does nothing. Install the engine first.
@@ -41,7 +41,7 @@ Every second, it looks at what your Claude session has actually done and updates
 You do everything right in the Claude Code chat box — no terminal needed.
 
 ### Step 1 — Install headroom (the engine)
-Install and register the **headroom** MCP server in Claude Code (the offline/local context-compression MCP). It's working when its tools appear as `mcp__headroom__headroom_compress` in your session. You also need `jq` installed (most machines already have it; if not: `brew install jq` or `apt install jq`).
+Install and register the **headroom** MCP server in Claude Code — **https://github.com/headroomlabs-ai/headroom**. It's working when its tools appear as `mcp__headroom__headroom_compress` in your session. You also need `jq` installed (most machines already have it; if not: `brew install jq` or `apt install jq`).
 
 ### Step 2 — Add this package
 Type these two lines into the Claude Code prompt:
