@@ -1,0 +1,17 @@
+{
+  "name": "headroom-tools",
+  "owner": {
+    "name": "Abhishek"
+  },
+  "plugins": [
+    {
+      "name": "headroom-usage-indicator",
+      "description": "Status-line indicator showing whether the headroom MCP context-compression is actually being used this session — red 'idle' until headroom_compress runs, green 'active' with a count once it does. Generalizes to any mcp__server__tool.",
+      "version": "1.0.0",
+      "source": "./",
+      "author": {
+        "name": "Abhishek"
+      }
+    }
+  ]
+}
