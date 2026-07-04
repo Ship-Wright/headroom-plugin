@@ -38,7 +38,53 @@ Claude Code pipes a JSON blob to the status-line command on **stdin**, containin
 
 ## Install
 
-Merge this into `~/.claude/settings.json` (global). This exact block is verified working and cross-platform (GNU `date -d` with a BSD `date -j` fallback):
+**Use the Python installer below — do not hand-write the `statusLine`.** It is *merge-aware*: if the user already has a custom status line, it **appends** the headroom segment to it (backing the original up under `_headroomStatusLineBackup`) instead of clobbering it. If there's no existing status line, it installs the headroom segment standalone. It's idempotent — re-running never double-appends. **Never** just overwrite `statusLine` yourself; that silently destroys the user's existing prompt.
+
+```bash
+python3 - <<'PY'
+import json, pathlib
+p = pathlib.Path.home() / ".claude" / "settings.json"
+data = json.loads(p.read_text()) if p.exists() else {}
+MARK = "mcp__headroom__headroom_compress"
+# headroom segment: consumes already-captured stdin in $in, sets $hr
+HR_CORE = (
+    "tp=$(printf '%s' \"$in\" | jq -r '.transcript_path // empty' 2>/dev/null); n=0; saved=0; age=999999; "
+    "if [ -n \"$tp\" ] && [ -f \"$tp\" ]; then "
+    "n=$(jq -s '[.[]|.message.content[]?|select(.type==\"tool_use\" and .name==\"mcp__headroom__headroom_compress\")]|length' \"$tp\" 2>/dev/null); "
+    "saved=$(jq -s '([.[]|.message.content[]?|select(.type==\"tool_use\" and .name==\"mcp__headroom__headroom_compress\")|.id]) as $ids|[.[]|.message.content[]?|select(.type==\"tool_result\" and ((.tool_use_id) as $t|($ids|index($t))!=null))|.content[]?|.text? // empty|(try (fromjson.tokens_saved) catch 0)]|add // 0' \"$tp\" 2>/dev/null); "
+    "last=$(jq -r 'select(.message.content)|select(any(.message.content[]?;.type==\"tool_use\" and .name==\"mcp__headroom__headroom_compress\"))|.timestamp' \"$tp\" 2>/dev/null | tail -1); "
+    "if [ -n \"$last\" ]; then le=$(date -d \"$last\" +%s 2>/dev/null || date -j -u -f \"%Y-%m-%dT%H:%M:%S\" \"${last%%.*}\" +%s 2>/dev/null); [ -n \"$le\" ] && age=$(( $(date -u +%s) - le )); fi; "
+    "fi; n=${n:-0}; saved=${saved:-0}; "
+    "if [ \"$n\" -gt 0 ] 2>/dev/null; then "
+    "if [ \"$age\" -le 60 ] 2>/dev/null; then hr=$(printf '\\033[32m● headroom · ~%s tok saved · %s×\\033[0m' \"$saved\" \"$n\"); "
+    "else hr=$(printf '\\033[90m○ headroom idle · ~%s tok saved · %s×\\033[0m' \"$saved\" \"$n\"); fi; "
+    "else hr=$(printf '\\033[31m○ headroom idle (not compressing yet)\\033[0m'); fi"
+)
+existing = data.get("statusLine"); backup = data.get("_headroomStatusLineBackup"); base = None
+if isinstance(backup, dict) and backup.get("type") == "command" and backup.get("command"):
+    base = backup                                          # re-run after a merge → re-merge onto true original
+elif isinstance(existing, dict) and existing.get("type") == "command" \
+        and existing.get("command") and MARK not in existing["command"]:
+    base = existing                                        # a real pre-existing custom status line
+if base is not None:
+    data["_headroomStatusLineBackup"] = base
+    cmd = ("in=$(cat); left=$(printf '%s' \"$in\" | { " + base["command"] + "; }); "
+           + HR_CORE + "; printf '%s  %s' \"$left\" \"$hr\"")
+    mode = "merged (appended to your existing status line)"
+else:
+    cmd = "in=$(cat); " + HR_CORE + "; printf '%s' \"$hr\""
+    mode = "installed (standalone)"
+data["statusLine"] = {"type": "command", "command": cmd, "refreshInterval": 1}
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+print("headroom status line", mode)
+PY
+```
+
+**To restore** the user's original status line later: copy `_headroomStatusLineBackup` back over `statusLine` and delete the backup key.
+
+<details>
+<summary>The raw headroom segment (reference — what the installer writes when there's no existing status line)</summary>
 
 ```json
   "statusLine": {
@@ -47,21 +93,7 @@ Merge this into `~/.claude/settings.json` (global). This exact block is verified
     "refreshInterval": 1
   }
 ```
-
-Don't hand-edit the escaping — merge programmatically so existing settings are preserved and JSON stays valid. The raw string below holds the real command:
-
-```bash
-python3 - <<'PY'
-import json, pathlib
-p = pathlib.Path.home() / ".claude" / "settings.json"
-data = json.loads(p.read_text()) if p.exists() else {}
-cmd = r'''in=$(cat); tp=$(printf '%s' "$in" | jq -r '.transcript_path // empty' 2>/dev/null); n=0; saved=0; age=999999; if [ -n "$tp" ] && [ -f "$tp" ]; then n=$(jq -s '[.[]|.message.content[]?|select(.type=="tool_use" and .name=="mcp__headroom__headroom_compress")]|length' "$tp" 2>/dev/null); saved=$(jq -s '([.[]|.message.content[]?|select(.type=="tool_use" and .name=="mcp__headroom__headroom_compress")|.id]) as $ids|[.[]|.message.content[]?|select(.type=="tool_result" and ((.tool_use_id) as $t|($ids|index($t))!=null))|.content[]?|.text? // empty|(try (fromjson.tokens_saved) catch 0)]|add // 0' "$tp" 2>/dev/null); last=$(jq -r 'select(.message.content)|select(any(.message.content[]?;.type=="tool_use" and .name=="mcp__headroom__headroom_compress"))|.timestamp' "$tp" 2>/dev/null | tail -1); if [ -n "$last" ]; then le=$(date -d "$last" +%s 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%S" "${last%%.*}" +%s 2>/dev/null); [ -n "$le" ] && age=$(( $(date -u +%s) - le )); fi; fi; n=${n:-0}; saved=${saved:-0}; if [ "$n" -gt 0 ] 2>/dev/null; then if [ "$age" -le 60 ] 2>/dev/null; then printf '\033[32m● headroom · ~%s tok saved · %s×\033[0m' "$saved" "$n"; else printf '\033[90m○ headroom idle · ~%s tok saved · %s×\033[0m' "$saved" "$n"; fi; else printf '\033[31m○ headroom idle (not compressing yet)\033[0m'; fi'''
-data["statusLine"] = {"type": "command", "command": cmd, "refreshInterval": 1}
-p.parent.mkdir(parents=True, exist_ok=True)
-p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-print("headroom status line installed")
-PY
-```
+</details>
 
 ## Verify Before Trusting It
 
@@ -95,7 +127,8 @@ rm -f /tmp/hr.jsonl
 | ANSI shows as text | `\033` isn't valid JSON; it must be `\\033` in settings.json so the shell sees `\033`. The Python installer handles this. |
 | Timestamp parse fails on Linux/macOS | Use GNU `date -d "$ts"` with a BSD `date -j -u -f … "${ts%%.*}"` fallback (as shipped). |
 | `transcript_path` read fails | Capture **stdin once** (`in=$(cat)`) then parse — the JSON arrives on stdin, and the transcript file is read separately by path. |
-| Overwriting other settings | Merge (read → add `statusLine` → write), never replace the whole file. |
+| Clobbering an existing status line | The user may already have a custom `statusLine`. Use the merge-aware installer (it appends + backs up to `_headroomStatusLineBackup`); never blindly overwrite `statusLine`. |
+| A status line reads stdin twice | stdin is consumable once. The merged command does `in=$(cat)` first, then feeds the original via `printf '%s' "$in" \| { orig; }` and reuses `$in` for the headroom segment. |
 
 ## Reload Caveat
 
