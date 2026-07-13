@@ -198,9 +198,43 @@ printf '%s\n%s\n' \
 out=$(badge "$TMP/t_str.jsonl" claude-opus-4-8 sess-n8)
 check "nudge: string-form content" "1 big blob uncompressed" "$out"
 
+# --- 17-19. dangi hook (real-time detector)
+DANGI="$ROOT/scripts/dangi-hook.sh"
+export HEADROOM_STATE_DIR="$TMP/state-dangi"
+export DANGI_NO_NOTIFY=1
+
+hook_input() {  # hook_input <tool-name> <char-count> <session-id> — synthetic PostToolUse stdin
+  jq -n --arg tool "$1" --arg sid "$3" --argjson n "$2" \
+    '{hook_event_name:"PostToolUse", tool_name:$tool, session_id:$sid, tool_output:("x"*$n)}'
+}
+
+# 17. big output → one-line additionalContext JSON, exit 0
+out=$(hook_input Bash 4096 dangi-s1 | bash "$DANGI"); rc=$?
+check "dangi: nudges on big output"   "additionalContext" "$out"
+check "dangi: message names itself"   "Dangi"             "$out"
+check "dangi: exit code"              "0"                  "$rc"
+printf '%s' "$out" | jq -e '.hookSpecificOutput.hookEventName == "PostToolUse"' >/dev/null \
+  && check "dangi: valid hook JSON" "ok" "ok" \
+  || check "dangi: valid hook JSON" "ok" "INVALID"
+
+# 18. rate limiting — same session silent, other session nudges
+out=$(hook_input Bash 8192 dangi-s1 | bash "$DANGI")
+check_absent "dangi: cooldown silences same session" "additionalContext" "$out"
+out=$(hook_input Bash 8192 dangi-s2 | bash "$DANGI")
+check "dangi: cooldown is per-session" "additionalContext" "$out"
+
+# 19. non-events stay silent (and exit 0)
+out=$(hook_input Bash 4095 dangi-s3 | bash "$DANGI")
+check_absent "dangi: under threshold" "additionalContext" "$out"
+out=$(hook_input mcp__headroom__headroom_compress 9000 dangi-s4 | bash "$DANGI")
+check_absent "dangi: headroom tools excluded" "additionalContext" "$out"
+out=$(printf 'not json at all' | bash "$DANGI"); rc=$?
+check_absent "dangi: garbage stdin silent" "additionalContext" "$out"
+check "dangi: garbage stdin exit 0" "0" "$rc"
+
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck "$SCRIPT"; then
+  if shellcheck "$SCRIPT" "$DANGI"; then
     echo "ok - shellcheck"; PASS=$((PASS+1))
   else
     echo "FAIL - shellcheck"; FAIL=$((FAIL+1))
