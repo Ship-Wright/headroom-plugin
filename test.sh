@@ -516,6 +516,222 @@ else
   echo "skip - plugin-native gate deny tests (headroom venv not found)"
 fi
 
+# --- 32. doctor + engine bootstrap + bundled MCP definition (v2.5 WS2)
+DOCTOR="$ROOT/scripts/doctor.sh"
+LAUNCHER="$ROOT/scripts/mcp-launcher.sh"
+MCP_JSON="$ROOT/.mcp.json"
+DOCD="$TMP/doc"; mkdir -p "$DOCD"
+
+doc_settings_wired() {  # doc_settings_wired <claude-dir> — statusLine wired, no legacy hooks
+  jq -n --arg cd "$1" '{statusLine:{type:"command",command:("bash \"" + $cd + "/headroom-statusline.sh\"")}}'
+}
+doc_settings_legacy() {  # doc_settings_legacy <claude-dir> — the real pre-plugin layout
+  jq -n --arg cd "$1" '{hooks:{
+    PostToolUse:[
+      {matcher:"*",hooks:[{type:"command",command:("bash \"" + $cd + "/dangi-hook.sh\""),timeout:10}]},
+      {matcher:"*",hooks:[{type:"command",command:"echo unrelated-hook"}]}],
+    PreToolUse:[
+      {matcher:"Read",hooks:[{type:"command",command:("bash \"" + $cd + "/hcat-gate.sh\""),timeout:10}]}]}}'
+}
+
+# stub toolchain for --fix tests: fake python3 whose `-m venv` materializes a fake
+# venv (fake pip records its args; NEVER runs real pip), plus the real jq on PATH.
+STUB="$DOCD/stub"; mkdir -p "$STUB"
+ln -sf "$(command -v jq)" "$STUB/jq"
+cat > "$STUB/python3" <<'STUBEOF'
+#!/bin/sh
+d=$(dirname "$0")
+echo "$@" >> "$d/python3.calls"
+if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+  mkdir -p "$3/bin"
+  cat > "$3/bin/pip" <<'PIPEOF'
+#!/bin/sh
+echo "$@" >> "$(dirname "$0")/../pip.calls"
+PIPEOF
+  cat > "$3/bin/python" <<'PYEOF2'
+#!/bin/sh
+exit 0
+PYEOF2
+  chmod +x "$3/bin/pip" "$3/bin/python"
+fi
+exit 0
+STUBEOF
+chmod +x "$STUB/python3"
+
+# fake engine dir: python that always succeeds + headroom that reports its invocation
+FENG="$DOCD/feng"; mkdir -p "$FENG"
+printf '#!/bin/sh\nexit 0\n' > "$FENG/python"
+cat > "$FENG/headroom" <<'FENGEOF'
+#!/bin/sh
+echo "launched: $* update=$HEADROOM_UPDATE_CHECK offline=$HF_HUB_OFFLINE"
+FENGEOF
+chmod +x "$FENG/python" "$FENG/headroom"
+
+# 32a. healthy read-only run against the real engine
+if [ -n "$HEADROOM_PY" ]; then
+  CD1="$DOCD/cd1"; mkdir -p "$CD1"
+  S1="$DOCD/s1.json"; doc_settings_wired "$CD1" > "$S1"
+  out=$(HCAT_PYTHON="$HEADROOM_PY" DOCTOR_SETTINGS="$S1" DOCTOR_CLAUDE_DIR="$CD1" \
+        DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" 2>&1); rc=$?
+  check "doctor: healthy engine"          "engine python"   "$out"
+  check "doctor: healthy hcat smoke"      "hcat smoke"      "$out"
+  check "doctor: healthy hooks.json"      "hooks.json"      "$out"
+  check "doctor: healthy statusLine"      "statusLine"      "$out"
+  check_absent "doctor: healthy has no FAIL"    "FAIL"    "$out"
+  check_absent "doctor: healthy has no fixable" "fixable" "$out"
+  check "doctor: healthy exit 0" "0" "$rc"
+else
+  echo "skip - doctor healthy-run tests (headroom venv not found)"
+fi
+
+# 32b. engine missing → fixable (not FAIL), smoke skipped, exit stays 0
+CD2="$DOCD/cd2"; mkdir -p "$CD2"
+S2="$DOCD/s2.json"; doc_settings_wired "$CD2" > "$S2"
+out=$(HCAT_PYTHON=/nonexistent/python DOCTOR_SETTINGS="$S2" DOCTOR_CLAUDE_DIR="$CD2" \
+      DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" 2>&1); rc=$?
+check "doctor: missing engine is fixable"    "fixable - engine"          "$out"
+check "doctor: smoke skipped without engine" "hcat smoke (engine missing" "$out"
+check "doctor: fixable-only still exit 0"    "0"                          "$rc"
+
+# 32c. broken engine (import ok, real runs fail) → FAIL + nonzero exit
+BADPY="$DOCD/badpy"; mkdir -p "$BADPY"
+printf '#!/bin/sh\ncase "$*" in *-c*) exit 0;; esac\nexit 1\n' > "$BADPY/python"
+chmod +x "$BADPY/python"
+out=$(HCAT_PYTHON="$BADPY/python" DOCTOR_SETTINGS="$S2" DOCTOR_CLAUDE_DIR="$CD2" \
+      DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" 2>&1); rc=$?
+check "doctor: broken engine FAILs smoke" "FAIL" "$out"
+if [ "$rc" -ne 0 ]; then
+  echo "ok - doctor: FAIL exits nonzero"; PASS=$((PASS+1))
+else
+  echo "FAIL - doctor: FAIL exits nonzero (got rc=0)"; FAIL=$((FAIL+1))
+fi
+
+# 32d. resolution order branch 2: sibling python of `headroom` found on PATH
+out=$(env -u HCAT_PYTHON PATH="$FENG:$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$S2" \
+      DOCTOR_CLAUDE_DIR="$CD2" DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" 2>&1)
+check "doctor: engine via headroom on PATH" "engine python: $FENG/python" "$out"
+
+# 32e. detectors: legacy hooks, unwired statusLine, stale copies, foreign statusLine
+CD3="$DOCD/cd3"; mkdir -p "$CD3"
+touch "$CD3/dangi-hook.sh" "$CD3/hcat-gate.sh" "$CD3/hcat"
+S3="$DOCD/s3.json"; doc_settings_legacy "$CD3" > "$S3"
+out=$(HCAT_PYTHON=/nonexistent/python DOCTOR_SETTINGS="$S3" DOCTOR_CLAUDE_DIR="$CD3" \
+      DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" 2>&1)
+check "doctor: detects legacy hooks"        "fixable - legacy hooks" "$out"
+check "doctor: detects unwired statusLine"  "fixable - statusLine"   "$out"
+check "doctor: detects stale copies"        "fixable - stale"        "$out"
+S3b="$DOCD/s3b.json"
+jq -n '{statusLine:{type:"command",command:"bash ~/my-custom-line.sh"}}' > "$S3b"
+out=$(HCAT_PYTHON=/nonexistent/python DOCTOR_SETTINGS="$S3b" DOCTOR_CLAUDE_DIR="$CD2" \
+      DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" --fix 2>&1)
+check "doctor: foreign statusLine left alone" "leaving it alone" "$out"
+check "doctor: foreign statusLine untouched by --fix" "my-custom-line.sh" \
+      "$(jq -r '.statusLine.command' "$S3b")"
+
+# 32f. --fix end-to-end: venv bootstrap (stubbed), legacy removal, statusLine, stale cleanup
+CD4="$DOCD/cd4"; mkdir -p "$CD4"
+touch "$CD4/dangi-hook.sh" "$CD4/hcat-gate.sh" "$CD4/hcat"
+S4="$DOCD/s4.json"; doc_settings_legacy "$CD4" > "$S4"
+out=$(env -u HCAT_PYTHON PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$S4" \
+      DOCTOR_CLAUDE_DIR="$CD4" DOCTOR_VENV_DIR="$DOCD/venv-boot" bash "$DOCTOR" --fix 2>&1); rc=$?
+check "fix: reports fixed"        "fixed"   "$out"
+check "fix: exit 0"               "0"       "$rc"
+check "fix: venv created via python3 -m venv" "-m venv $DOCD/venv-boot" "$(cat "$STUB/python3.calls" 2>/dev/null)"
+check "fix: pip install headroom (stubbed)"   "install headroom" "$(cat "$DOCD/venv-boot/pip.calls" 2>/dev/null)"
+check "fix: legacy hooks removed" "0" \
+  "$(jq '[.hooks // {} | to_entries[] | .value[]?.hooks[]? | select((.command // "") | test("dangi-hook|hcat-gate"))] | length' "$S4")"
+check "fix: unrelated hook preserved" "unrelated-hook" "$(cat "$S4")"
+check "fix: statusLine written" "headroom-statusline.sh" "$(jq -r '.statusLine.command // empty' "$S4")"
+if cmp -s "$ROOT/scripts/statusline.sh" "$CD4/headroom-statusline.sh"; then
+  echo "ok - fix: statusline script copied"; PASS=$((PASS+1))
+else
+  echo "FAIL - fix: statusline script copied"; FAIL=$((FAIL+1))
+fi
+if [ -e "$CD4/dangi-hook.sh" ] || [ -e "$CD4/hcat-gate.sh" ] || [ -e "$CD4/hcat" ]; then
+  echo "FAIL - fix: stale copies removed"; FAIL=$((FAIL+1))
+else
+  echo "ok - fix: stale copies removed"; PASS=$((PASS+1))
+fi
+check "fix: one timestamped backup" "1" "$(ls "$S4".bak.* 2>/dev/null | wc -l)"
+# idempotency: a second --fix run must change nothing and re-bootstrap nothing
+cp "$S4" "$DOCD/s4.after1"
+out2=$(env -u HCAT_PYTHON PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$S4" \
+       DOCTOR_CLAUDE_DIR="$CD4" DOCTOR_VENV_DIR="$DOCD/venv-boot" bash "$DOCTOR" --fix 2>&1)
+if cmp -s "$S4" "$DOCD/s4.after1"; then
+  echo "ok - fix: second run leaves settings unchanged"; PASS=$((PASS+1))
+else
+  echo "FAIL - fix: second run leaves settings unchanged"; FAIL=$((FAIL+1))
+fi
+check "fix: second run adds no backup" "1" "$(ls "$S4".bak.* 2>/dev/null | wc -l)"
+check "fix: bootstrap not repeated"    "1" "$(wc -l < "$STUB/python3.calls")"
+check_absent "fix: nothing left fixable after fix" "fixable" "$out2"
+
+# 32g. doctor CLI hygiene
+out=$(bash "$DOCTOR" --bogus 2>&1); rc=$?
+check "doctor: unknown flag errors" "unknown" "$out"
+check "doctor: unknown flag exit 2" "2"       "$rc"
+
+# 32h. mcp-launcher.sh — resolves the engine and execs `headroom mcp serve`
+if [ -x "$LAUNCHER" ]; then
+  echo "ok - launcher: executable"; PASS=$((PASS+1))
+else
+  echo "FAIL - launcher: executable"; FAIL=$((FAIL+1))
+fi
+out=$(HCAT_PYTHON="$FENG/python" bash "$LAUNCHER" 2>&1); rc=$?
+check "launcher: execs headroom mcp serve" "launched: mcp serve" "$out"
+check "launcher: update check off"         "update=off"          "$out"
+check "launcher: hf offline"               "offline=1"           "$out"
+check "launcher: exit 0"                   "0"                   "$rc"
+err=$(HCAT_PYTHON=/nonexistent/python bash "$LAUNCHER" 2>&1 >/dev/null); rc=$?
+check "launcher: missing engine names doctor" "doctor" "$err"
+if [ "$rc" -ne 0 ]; then
+  echo "ok - launcher: missing engine exits nonzero"; PASS=$((PASS+1))
+else
+  echo "FAIL - launcher: missing engine exits nonzero (got rc=0)"; FAIL=$((FAIL+1))
+fi
+if [ "$(printf '%s\n' "$err" | wc -l | tr -d ' ')" = "1" ]; then
+  echo "ok - launcher: single stderr line"; PASS=$((PASS+1))
+else
+  echo "FAIL - launcher: single stderr line (got: $err)"; FAIL=$((FAIL+1))
+fi
+NOHR="$DOCD/nohr"; mkdir -p "$NOHR"
+printf '#!/bin/sh\nexit 0\n' > "$NOHR/python"; chmod +x "$NOHR/python"
+err=$(HCAT_PYTHON="$NOHR/python" bash "$LAUNCHER" 2>&1 >/dev/null); rc=$?
+check "launcher: python without headroom binary names doctor" "doctor" "$err"
+if [ "$rc" -ne 0 ]; then
+  echo "ok - launcher: headroom-binary-missing exits nonzero"; PASS=$((PASS+1))
+else
+  echo "FAIL - launcher: headroom-binary-missing exits nonzero"; FAIL=$((FAIL+1))
+fi
+
+# 32i. bundled .mcp.json — erases the manual "register headroom MCP" step
+if jq -e . "$MCP_JSON" >/dev/null 2>&1; then
+  echo "ok - mcp.json: parses"; PASS=$((PASS+1))
+else
+  echo "FAIL - mcp.json: parses"; FAIL=$((FAIL+1))
+fi
+check "mcp.json: stdio server" "stdio" "$(jq -r '.mcpServers.headroom.type // empty' "$MCP_JSON" 2>/dev/null)"
+mcp_cmd=$(jq -r '.mcpServers.headroom.command // empty' "$MCP_JSON" 2>/dev/null)
+check "mcp.json: command uses CLAUDE_PLUGIN_ROOT" '${CLAUDE_PLUGIN_ROOT}' "$mcp_cmd"
+check "mcp.json: command targets mcp-launcher.sh" "mcp-launcher.sh"       "$mcp_cmd"
+check "mcp.json: env update off" "off" "$(jq -r '.mcpServers.headroom.env.HEADROOM_UPDATE_CHECK // empty' "$MCP_JSON" 2>/dev/null)"
+check "mcp.json: env hf offline" "1"   "$(jq -r '.mcpServers.headroom.env.HF_HUB_OFFLINE // empty' "$MCP_JSON" 2>/dev/null)"
+mcp_resolved=${mcp_cmd/'${CLAUDE_PLUGIN_ROOT}'/"$ROOT"}
+out=$(HCAT_PYTHON="$FENG/python" "$mcp_resolved" 2>&1)
+check "mcp.json: end-to-end launch through the bundled command" "launched: mcp serve" "$out"
+
+# 32j. /doctor skill
+DSKILL="$ROOT/skills/doctor/SKILL.md"
+if [ -f "$DSKILL" ]; then
+  echo "ok - doctor skill: exists"; PASS=$((PASS+1))
+else
+  echo "FAIL - doctor skill: exists"; FAIL=$((FAIL+1))
+fi
+check "doctor skill: frontmatter name"     "name: doctor" "$(head -5 "$DSKILL" 2>/dev/null)"
+check "doctor skill: triggers on breakage" "not working"  "$(cat "$DSKILL" 2>/dev/null)"
+check "doctor skill: runs doctor.sh"       "doctor.sh"    "$(cat "$DSKILL" 2>/dev/null)"
+check "doctor skill: consent before --fix" "consent"      "$(cat "$DSKILL" 2>/dev/null)"
+
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck "$SCRIPT" "$DANGI" "$ROOT/scripts/hcat-gate.sh"; then

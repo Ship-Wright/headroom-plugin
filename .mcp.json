@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "headroom": {
+      "type": "stdio",
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launcher.sh",
+      "args": [],
+      "env": {
+        "HEADROOM_UPDATE_CHECK": "off",
+        "HF_HUB_OFFLINE": "1"
+      }
+    }
+  }
+}
