@@ -76,6 +76,25 @@ check "unknown model: tokens"      "~500 tok" "$out"
 check_absent "unknown model: no ¢" "¢"        "$out"
 check_absent "unknown model: no \$" "\$"      "$out"
 
+# --- 5. cache: same-size transcript rewrite is served from cache (proves no re-parse)
+compress_event c1 500 > "$TMP/t_cache.jsonl"
+out=$(badge "$TMP/t_cache.jsonl" claude-opus-4-8 sess-cache)
+check "cache: first render"  "~500 tok" "$out"
+# mangle the tool name in place, keeping byte length identical — a re-parse would find 0 events
+sed 's/headroom_compress/headroom_compresX/' "$TMP/t_cache.jsonl" > "$TMP/t_cache.mangled" \
+  && mv "$TMP/t_cache.mangled" "$TMP/t_cache.jsonl"
+out=$(badge "$TMP/t_cache.jsonl" claude-opus-4-8 sess-cache)
+check "cache: same-size rewrite still served from cache" "~500 tok" "$out"
+
+# --- 6. cache invalidation: transcript growth triggers re-parse
+compress_event g1 500 > "$TMP/t_grow.jsonl"
+out=$(badge "$TMP/t_grow.jsonl" claude-opus-4-8 sess-grow)
+check "growth: first render" "1×" "$out"
+compress_event g2 250 >> "$TMP/t_grow.jsonl"
+out=$(badge "$TMP/t_grow.jsonl" claude-opus-4-8 sess-grow)
+check "growth: recount"      "2×"       "$out"
+check "growth: retotal"      "~750 tok" "$out"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

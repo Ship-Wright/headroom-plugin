@@ -6,11 +6,13 @@
 set -u
 
 TOOL="mcp__headroom__headroom_compress"
+STATE_DIR="${HEADROOM_STATE_DIR:-$HOME/.claude/headroom-indicator}"
 
 in=$(cat)
 
 tp=$(printf '%s' "$in" | jq -r '.transcript_path // empty' 2>/dev/null) || tp=""
 model=$(printf '%s' "$in" | jq -r '.model.id // empty' 2>/dev/null) || model=""
+sid=$(printf '%s' "$in" | jq -r '.session_id // empty' 2>/dev/null) || sid=""
 
 fmt_tok() {  # 2400 -> "2.4k", 500 -> "500"
   if [ "$1" -ge 1000 ] 2>/dev/null; then
@@ -61,7 +63,23 @@ compute() {  # fills n / saved / last_ts from the transcript at $tp
 }
 
 if [ -n "$tp" ] && [ -f "$tp" ]; then
-  compute
+  size=$(stat -c%s "$tp" 2>/dev/null || stat -f%z "$tp" 2>/dev/null || echo "")
+  cache=""
+  [ -n "$sid" ] && cache="$STATE_DIR/session-$sid.cache"
+  hit=0
+  if [ -n "$cache" ] && [ -n "$size" ] && [ -f "$cache" ]; then
+    IFS='|' read -r csize cn csaved clast < "$cache" || true
+    if [ "${csize:-}" = "$size" ]; then
+      n=${cn:-0}; saved=${csaved:-0}; last_ts=${clast:-}
+      hit=1
+    fi
+  fi
+  if [ "$hit" -ne 1 ]; then
+    compute
+    if [ -n "$cache" ] && mkdir -p "$STATE_DIR" 2>/dev/null; then
+      printf '%s|%s|%s|%s\n' "${size:-0}" "$n" "$saved" "$last_ts" > "$cache" 2>/dev/null || true
+    fi
+  fi
 fi
 
 age=999999
