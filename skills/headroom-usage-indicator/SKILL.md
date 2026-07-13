@@ -14,9 +14,9 @@ The headroom MCP compresses large, structured tool outputs to save context — b
 - ⚪ `○ headroom idle · ~2.4k tok · $0.007 · 3× · 2 missed | $1.83 all-time` — after 60s of quiet (keeps the totals; ` · N missed` appears when more big results arrived than you've compressed)
 - 🤖 `😴 dangi` / `🤖 dangi: 3!` — the mascot at the right end of every badge: asleep when nothing is being missed, awake with the count when big results are going uncompressed. Its hook twin nudges Claude the moment such an output lands.
 
-v2.3 adds the **prevention layer**: `hcat` compresses structured files *at the source* (raw bytes never enter context — the only path that saves tokens on the first pass), and a PreToolUse **gate** redirects Claude from raw Reads of big structured files to `hcat`, once per file per session.
+v2.3 adds the **prevention layer**: `hcat` compresses structured files *at the source* (raw bytes never enter context — the only path that saves tokens on the first pass), and a PreToolUse **gate** redirects Claude from raw Reads of big structured files to `hcat`, once per file per session. v2.4 closes the loop: the badge counts hcat runs too, by parsing the `── hcat: … ~B tok → ~A tok` receipts hcat leaves in the transcript (passthrough receipts count as nothing; a receipt is never a "missed" blob).
 
-**Core principle:** detect real usage from the session transcript, not from intent. It counts `tool_use` calls to `mcp__headroom__headroom_compress` and sums the `tokens_saved` those calls actually reported — so it can't lie. The dollar figure prices those tokens at the **session model's input rate** (a conservative floor — see below).
+**Core principle:** detect real usage from the session transcript, not from intent. It counts `tool_use` calls to `mcp__headroom__headroom_compress` plus hcat receipts, and sums the `tokens_saved` / receipt deltas those actually reported — so it can't lie. The dollar figure prices those tokens at the **session model's input rate** (a conservative floor — see below).
 
 ## Prerequisites
 

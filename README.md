@@ -65,6 +65,8 @@ v2.3 adds the **prevention layer**:
 
 Both are installed and registered by the same installer as everything else.
 
+**v2.4:** the badge finally *sees* hcat. Every `hcat` run leaves a receipt in the transcript (`── hcat: … ~18899 tok → ~9351 tok (50.5% saved)`); the status line now parses those receipts and folds them into the token count, the dollar figure, the `N×` counter, the freshness dot, and the all-time total — passthrough receipts (files hcat couldn't shrink) count as nothing, and a big receipt is never a "missed" blob (it *is* the compression). Before v2.4 the badge only counted `headroom_compress` MCP calls, so a session that saved everything via hcat still read "idle (not compressing yet)".
+
 ---
 
 ## Install (3 steps, all typed inside Claude Code)

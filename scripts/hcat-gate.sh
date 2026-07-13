@@ -18,9 +18,19 @@ STATE_DIR="${HEADROOM_STATE_DIR:-$HOME/.claude/headroom-indicator}"
 in=$(cat)
 
 tool=$(printf '%s' "$in" | jq -r '.tool_name // empty' 2>/dev/null) || exit 0
-[ "$tool" = "Read" ] || exit 0
-
-fp=$(printf '%s' "$in" | jq -r '.tool_input.file_path // empty' 2>/dev/null) || exit 0
+case "$tool" in
+  Read)
+    fp=$(printf '%s' "$in" | jq -r '.tool_input.file_path // empty' 2>/dev/null) || exit 0
+    ;;
+  Bash)
+    # Only a bare, single-file `cat <path>` — a raw whole-file dump. Pipes,
+    # redirects, flags, and bounded peeks (head/tail) are real processing.
+    cmd=$(printf '%s' "$in" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
+    case "$cmd" in *'|'*|*'>'*|*'<'*|*';'*|*'&'*|*'$('*|*'`'*) exit 0 ;; esac
+    fp=$(printf '%s' "$cmd" | sed -nE 's/^[[:space:]]*cat[[:space:]]+("([^"]+)"|'\''([^'\'']+)'\''|([^[:space:]]+))[[:space:]]*$/\2\3\4/p')
+    ;;
+  *) exit 0 ;;
+esac
 [ -n "$fp" ] && [ -f "$fp" ] || exit 0
 
 case "$fp" in
