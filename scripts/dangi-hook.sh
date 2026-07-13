@@ -22,7 +22,7 @@ tool=$(printf '%s' "$tool" | tr -cd 'A-Za-z0-9_.-')   # defensive: tool name fee
 [ -n "$tool" ] || exit 0
 case "$tool" in "$HPREFIX"*) exit 0 ;; esac
 
-size=$(printf '%s' "$in" | jq -r '.tool_output // "" | tostring | length' 2>/dev/null) || exit 0
+size=$(printf '%s' "$in" | jq -r '.tool_response // "" | tostring | length' 2>/dev/null) || exit 0
 case "$size" in (*[!0-9]*|"") exit 0 ;; esac
 [ "$size" -ge "$NUDGE_BYTES" ] || exit 0
 
