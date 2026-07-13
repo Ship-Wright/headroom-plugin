@@ -39,7 +39,13 @@ if [ -z "$PY" ] || [ ! -x "$PY" ]; then
 fi
 
 HF_HUB_OFFLINE=1 HEADROOM_UPDATE_CHECK=off exec "$PY" - "$FILE" <<'PYEOF'
-import json, os, sys, time
+import json, os, signal, sys, time
+
+# `hcat big.json | head -1` must die silently when the reader closes the pipe,
+# like cat does — otherwise python's stdout teardown spews BrokenPipeError on
+# stderr. Guarded: some platforms (e.g. Windows) have no SIGPIPE.
+if hasattr(signal, "SIGPIPE"):
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 path = os.path.abspath(sys.argv[1])
 try:

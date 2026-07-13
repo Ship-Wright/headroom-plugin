@@ -516,6 +516,93 @@ else
   echo "skip - plugin-native gate deny tests (headroom venv not found)"
 fi
 
+# --- 32. portability (v2.5 WS3): linux notify-send fallback, hcat SIGPIPE, GNU-stat env
+export HEADROOM_STATE_DIR="$TMP/state-port"
+
+# A minimal "Linux" PATH: coreutils + jq symlinked in, a GNU-style stat shim
+# (accepts -c, rejects -f like GNU stat does), a fake notify-send that logs its
+# args, and NO osascript anywhere on it.
+LINBIN="$TMP/linbin"; mkdir -p "$LINBIN"
+for t in jq tr wc date mkdir rmdir cat; do
+  ln -s "$(command -v "$t")" "$LINBIN/$t"
+done
+cat > "$LINBIN/stat" <<'EOF'
+#!/bin/sh
+case "$1" in
+  -c) shift; exec /usr/bin/stat -f %m "$2" ;;
+  # Faithful to real GNU `stat -f %m FILE`: -f means --file-system there, so it
+  # errors on the '%m' operand (stderr) but STILL prints an fs-info block for
+  # FILE on stdout, and exits 1 — stdout garbage that poisons $(( now - ... ))
+  # if a caller tries BSD-style -f first.
+  -f) echo "stat: cannot read file system information for '%m': No such file or directory" >&2
+      printf '  File: "%s"\n    ID: 100000ff Namelen: 255     Type: ext2/ext3\n' "${3:-}"
+      exit 1 ;;
+  *) echo "stat: invalid option" >&2; exit 1 ;;
+esac
+EOF
+printf '#!/bin/sh\necho "$@" >> "%s/notifysend.calls"\n' "$TMP" > "$LINBIN/notify-send"
+chmod +x "$LINBIN/stat" "$LINBIN/notify-send"
+
+ns_count() { wc -l < "$TMP/notifysend.calls" 2>/dev/null | tr -d ' '; }
+
+# no osascript on PATH → notify-send fallback fires; nudge and exit 0 intact
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"port-s1",
+  tool_response:("x"*9000)}' | env -u DANGI_NO_NOTIFY PATH="$LINBIN" /bin/bash "$DANGI"); rc=$?
+check "portability: linux env still nudges" "additionalContext" "$out"
+check "portability: linux env exit 0" "0" "$rc"
+for _ in 1 2 3 4 5 6 7 8 9 10; do   # notify-send fires in the background — poll up to 2s
+  [ -s "$TMP/notifysend.calls" ] && break
+  sleep 0.2
+done
+check "portability: notify-send invoked without osascript" "Dangi" "$(cat "$TMP/notifysend.calls" 2>/dev/null)"
+check "portability: notify-send carries the message" "KB Bash output" "$(cat "$TMP/notifysend.calls" 2>/dev/null)"
+
+# NOTIFY_COOLDOWN applies to notify-send too — same session again stays quiet
+jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"port-s1",
+  tool_response:("x"*9000)}' | env -u DANGI_NO_NOTIFY PATH="$LINBIN" /bin/bash "$DANGI" > /dev/null
+sleep 0.5
+check "portability: notify-send cooldown per session" "1" "$(ns_count)"
+
+# DANGI_NO_NOTIFY kill switch silences notify-send as well
+jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"port-s2",
+  tool_response:("x"*9000)}' | env DANGI_NO_NOTIFY=1 PATH="$LINBIN" /bin/bash "$DANGI" > /dev/null
+sleep 0.5
+check "portability: DANGI_NO_NOTIFY silences notify-send" "1" "$(ns_count)"
+
+# when both notifiers are present, osascript is preferred (macOS look stays native)
+osa_pre=$(wc -l < "$TMP/osascript.calls" | tr -d ' ')
+jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"port-s3",
+  tool_response:("x"*9000)}' | env -u DANGI_NO_NOTIFY PATH="$FAKEBIN:$LINBIN:$PATH" bash "$DANGI" > /dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ "$(wc -l < "$TMP/osascript.calls" | tr -d ' ')" -gt "$osa_pre" ] && break
+  sleep 0.2
+done
+check "portability: osascript preferred when both exist" "$((osa_pre + 1))" "$(wc -l < "$TMP/osascript.calls" | tr -d ' ')"
+check "portability: notify-send not doubled" "1" "$(ns_count)"
+
+# stale-lock steal must work where only GNU stat exists (stat -c, no -f)
+mkdir -p "$HEADROOM_STATE_DIR/.lock-port-s4"
+touch -t 202001010000 "$HEADROOM_STATE_DIR/.lock-port-s4"
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"port-s4",
+  tool_response:("x"*9000)}' | env DANGI_NO_NOTIFY=1 PATH="$LINBIN" /bin/bash "$DANGI"); rc=$?
+check "portability: stale lock stolen with GNU-only stat" "additionalContext" "$out"
+check "portability: GNU-only stat exit 0" "0" "$rc"
+
+# hcat piped into head must not spew BrokenPipeError from python stdout teardown
+if [ -n "$HEADROOM_PY" ]; then
+  "$HEADROOM_PY" - "$TMP/hc_pipe.json" <<'PYEOF'
+import json, sys
+rows = [{"id": i, "user": f"user_{i%50}", "event": "click", "ts": 1700000000+i, "ok": True} for i in range(5000)]
+open(sys.argv[1], "w").write(json.dumps(rows, indent=2))
+PYEOF
+  err=$( { HEADROOM_WORKSPACE_DIR="$TMP/hc_ws" bash "$HCAT" "$TMP/hc_pipe.json" | head -1 > "$TMP/hc_pipe.out"; } 2>&1 )
+  check_absent "portability: no BrokenPipeError when piped to head" "BrokenPipeError" "$err"
+  check_absent "portability: no traceback when piped to head" "Traceback" "$err"
+  check "portability: receipt header survives the pipe" "── hcat:" "$(cat "$TMP/hc_pipe.out")"
+else
+  echo "skip - hcat SIGPIPE test (headroom venv not found)"
+fi
+
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck "$SCRIPT" "$DANGI" "$ROOT/scripts/hcat-gate.sh"; then

@@ -53,7 +53,7 @@ if mkdir -p "$STATE_DIR" 2>/dev/null; then
   if mkdir "$lock" 2>/dev/null; then
     locked=1
   else
-    lock_age=$(( now - $(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || echo "$now") ))
+    lock_age=$(( now - $(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || echo "$now") ))
     if [ "$lock_age" -gt 5 ]; then
       rmdir "$lock" 2>/dev/null || true
       mkdir "$lock" 2>/dev/null && locked=1
@@ -69,10 +69,17 @@ fi
 case "$last_nudge" in (*[!0-9]*|"") last_nudge=0 ;; esac
 case "$last_notify" in (*[!0-9]*|"") last_notify=0 ;; esac
 
-if [ -z "${DANGI_NO_NOTIFY:-}" ] && command -v osascript >/dev/null 2>&1 \
-   && [ $(( now - last_notify )) -ge "$NOTIFY_COOLDOWN" ]; then
-  osascript -e "display notification \"A ${kb} KB ${tool} output just landed uncompressed — headroom could shrink it.\" with title \"🤖 Dangi\"" >/dev/null 2>&1 &
-  last_notify=$now
+# Fire-and-forget desktop notification: osascript on macOS, notify-send on
+# Linux. Backgrounded — a hook must never wait on a notification daemon.
+if [ -z "${DANGI_NO_NOTIFY:-}" ] && [ $(( now - last_notify )) -ge "$NOTIFY_COOLDOWN" ]; then
+  notify_msg="A ${kb} KB ${tool} output just landed uncompressed — headroom could shrink it."
+  if command -v osascript >/dev/null 2>&1; then
+    osascript -e "display notification \"$notify_msg\" with title \"🤖 Dangi\"" >/dev/null 2>&1 &
+    last_notify=$now
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send "🤖 Dangi" "$notify_msg" >/dev/null 2>&1 &
+    last_notify=$now
+  fi
 fi
 
 nudge=0
