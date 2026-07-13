@@ -89,7 +89,7 @@ headroom (Step 1) probably isn't installed or isn't registered. This package can
 This is a *reminder/gauge*, not an auto-compressor. headroom (with its own instructions) decides when to compress; this badge just shows you whether it happened.
 
 **I already have a custom status line — will this wipe it?**
-No. As of v1.2.0 the installer is **merge-aware**: it *appends* the headroom badge to your existing status line (so you keep `Model · ctx · dir (branch)` and gain the headroom dot) and backs up your original under `_headroomStatusLineBackup` in `settings.json`. To restore, copy that key back over `statusLine`.
+No. The installer is **merge-aware**: it *appends* the headroom badge to your existing status line (so you keep `Model · ctx · dir (branch)` and gain the headroom dot) and backs up your original under `_headroomStatusLineBackup` in `settings.json`. To restore, copy that key back over `statusLine`.
 
 **Can I change the colours / the 60-second decay / show a different tool?**
 Yes — see the **Customize** section in `skills/headroom-usage-indicator/SKILL.md`. The same pattern works for any MCP tool (`mcp__server__tool`), not just headroom.
@@ -101,7 +101,7 @@ No. It's a local shell command reading your local session file. Nothing leaves y
 
 ## What's inside
 
-- `skills/headroom-usage-indicator/SKILL.md` — the full, tested skill: the ready-to-paste `statusLine` config, a safe Python installer that merges into your settings, how it works, a common-mistakes table, verification steps, and customization notes.
+- `skills/headroom-usage-indicator/SKILL.md` — the full, tested skill: a safe Python installer that copies `scripts/statusline.sh` to `~/.claude/headroom-statusline.sh` and merges the status line into your settings, how it works, a common-mistakes table, verification steps, and customization notes.
 
 ## License
 
