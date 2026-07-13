@@ -136,6 +136,60 @@ compress_event sw2 100 >> "$TMP/t_switch.jsonl"
 badge "$TMP/t_switch.jsonl" claude-haiku-4-5 sess-switch > /dev/null
 check "fix2: totals usd never shrinks on model switch" "0.002500" "$(cat "$HEADROOM_STATE_DIR/session-sess-switch.totals")"
 
+# --- 11-15. missed-opportunity nudge
+export HEADROOM_STATE_DIR="$TMP/state-nudge"
+OLD_TS="2020-01-01T00:00:00.000Z"
+
+old_compress_event() {  # old_compress_event <id> <tokens> — compress stamped in the past (grey badge)
+  printf '%s\n%s\n' \
+    "{\"timestamp\":\"$OLD_TS\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"$1\",\"name\":\"mcp__headroom__headroom_compress\"}]}}" \
+    "{\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"$1\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"tokens_saved\\\": $2}\"}]}]}}"
+}
+
+big_result_event() {  # big_result_event <tool-use-id> <tool-name> <byte-count> — a large non-compress tool result
+  pad=$(printf 'x%.0s' $(seq 1 "$3"))
+  printf '%s\n%s\n' \
+    "{\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"$1\",\"name\":\"$2\"}]}}" \
+    "{\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"$1\",\"content\":[{\"type\":\"text\",\"text\":\"$pad\"}]}]}}"
+}
+
+# 11. big blobs with no compress → red nudge, singular/plural
+big_result_event b1 Bash 4096 > "$TMP/t_nudge1.jsonl"
+out=$(badge "$TMP/t_nudge1.jsonl" claude-opus-4-8 sess-n1)
+check "nudge: singular" "1 big blob uncompressed" "$out"
+{ big_result_event b1 Bash 4096; big_result_event b2 Read 4096; } > "$TMP/t_nudge2.jsonl"
+out=$(badge "$TMP/t_nudge2.jsonl" claude-opus-4-8 sess-n2)
+check "nudge: plural" "2 big blobs uncompressed" "$out"
+
+# 12. just under the threshold → no nudge
+big_result_event u1 Bash 4095 > "$TMP/t_under.jsonl"
+out=$(badge "$TMP/t_under.jsonl" claude-opus-4-8 sess-n3)
+check "nudge: under threshold" "not compressing yet" "$out"
+
+# 13. headroom's own oversized results are excluded
+big_result_event r1 mcp__headroom__headroom_retrieve 5000 > "$TMP/t_retr.jsonl"
+out=$(badge "$TMP/t_retr.jsonl" claude-opus-4-8 sess-n4)
+check "nudge: headroom results excluded" "not compressing yet" "$out"
+
+# 14. forgiveness: each compression forgives one big blob
+{ old_compress_event c1 500; big_result_event b1 Bash 4096; big_result_event b2 Bash 4096; } > "$TMP/t_forgive.jsonl"
+out=$(badge "$TMP/t_forgive.jsonl" claude-opus-4-8 sess-n5)
+check "forgive: grey shows missed"      "· 1 missed"                "$out"
+check "forgive: grey idle with totals"  "○ headroom idle · ~500 tok" "$out"
+{ old_compress_event c1 500; big_result_event b1 Bash 4096; } > "$TMP/t_even.jsonl"
+out=$(badge "$TMP/t_even.jsonl" claude-opus-4-8 sess-n6)
+check_absent "forgive: even count hides missed" " missed" "$out"
+
+# 15. v2.0 4-field cache line forces recompute and upgrades to 5 fields
+big_result_event b1 Bash 4096 > "$TMP/t_upg.jsonl"
+sz=$(stat -c%s "$TMP/t_upg.jsonl" 2>/dev/null || stat -f%z "$TMP/t_upg.jsonl")
+mkdir -p "$HEADROOM_STATE_DIR"
+printf '%s|9|9999|2020-01-01T00:00:00.000Z\n' "$sz" > "$HEADROOM_STATE_DIR/session-sess-n7.cache"
+out=$(badge "$TMP/t_upg.jsonl" claude-opus-4-8 sess-n7)
+check "cache upgrade: stale 4-field line recomputed" "1 big blob uncompressed" "$out"
+fields=$(awk -F'|' '{print NF; exit}' "$HEADROOM_STATE_DIR/session-sess-n7.cache")
+check "cache upgrade: rewritten with 5 fields" "5" "$fields"
+
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck "$SCRIPT"; then
