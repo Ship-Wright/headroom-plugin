@@ -205,7 +205,7 @@ export DANGI_NO_NOTIFY=1
 
 hook_input() {  # hook_input <tool-name> <char-count> <session-id> — synthetic PostToolUse stdin
   jq -n --arg tool "$1" --arg sid "$3" --argjson n "$2" \
-    '{hook_event_name:"PostToolUse", tool_name:$tool, session_id:$sid, tool_output:("x"*$n)}'
+    '{hook_event_name:"PostToolUse", tool_name:$tool, session_id:$sid, tool_response:("x"*$n)}'
 }
 
 # 17. big output → one-line additionalContext JSON, exit 0
