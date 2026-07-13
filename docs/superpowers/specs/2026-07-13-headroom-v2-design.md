@@ -114,6 +114,22 @@ New file: `scripts/statusline.sh` (bash, jq-dependent, same as today).
   lifetime segment); the badge must still render.
 - awk unavailable is not handled (POSIX awk is assumed present, like jq).
 
+## Amendment (2026-07-13, post final review — approved)
+
+Two defects in this spec's §3/§4 design were found by the final whole-branch
+review and fixed on the branch, superseding the plan's pinned reference
+script:
+
+- **Totals are written only when `saved > 0`.** The original design wrote a
+  `0 0.000000` totals file for every session, growing the state dir
+  unboundedly and permanently satisfying the ">1 sessions" all-time gate.
+  The cache file is still written unconditionally (idle sessions benefit
+  most from skipping the jq parse).
+- **A session's recorded USD is monotonic.** The totals overwrite now keeps
+  `max(old_usd, new_usd)`, so a mid-session model switch (e.g. Opus→Haiku,
+  or to an unknown model) can no longer shrink or zero the session's
+  lifetime contribution.
+
 ## Out of scope
 
 - Compounding/cache-read savings estimates (documented as a note only).

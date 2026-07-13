@@ -1,118 +1,101 @@
 ---
 name: headroom-usage-indicator
-description: Use when you want a persistent visual reminder of whether the headroom MCP compression is actually being used this session — an always-visible status line that stays "idle" until headroom_compress is called, flips to "active" with the tokens it saved, then decays back to idle after a quiet period. Also applies to surfacing whether any specific MCP tool (mcp__server__tool) has been invoked in the current Claude Code session.
+description: Use when you want a persistent visual reminder of whether the headroom MCP compression is actually being used this session — an always-visible status line that stays "idle" until headroom_compress is called, flips to "active" with the tokens AND money it saved (priced against the session's model), then decays back to idle after a quiet period. Also shows an all-time money-saved total across sessions.
 ---
 
 # Headroom Usage Indicator
 
 ## Overview
 
-The headroom MCP compresses large, structured tool outputs to save context — but it's easy to *forget* to use it, and there's no built-in signal telling you whether you did. This skill adds a Claude Code **status line** that is an honest, always-on indicator:
+The headroom MCP compresses large, structured tool outputs to save context — but it's easy to *forget* to use it. This skill adds a Claude Code **status line** that is an honest, always-on indicator:
 
 - 🔴 `○ headroom idle (not compressing yet)` — until `headroom_compress` runs this session
-- 🟢 `● headroom · ~770 tok saved · 2×` — for 60s after a compression (bright, "active")
-- ⚪ `○ headroom idle · ~770 tok saved · 2×` — after 60s of no compression (dims, but keeps the session total)
+- 🟢 `● headroom · ~2.4k tok · $0.007 · 3× | $1.83 all-time` — for 60s after a compression
+- ⚪ `○ headroom idle · ~2.4k tok · $0.007 · 3× | $1.83 all-time` — after 60s of quiet (keeps the totals)
 
-**Core principle:** detect real usage from the session transcript, not from intent. It counts `tool_use` calls to `mcp__headroom__headroom_compress` and sums the `tokens_saved` those calls actually reported — so it can't lie.
-
-## When to Use
-
-- You have the headroom MCP installed and want a nudge to actually use it.
-- You want to see at a glance whether compression fired and how much it saved this session.
-- Generalize the same pattern to indicate whether *any* MCP tool (`mcp__server__tool`) has been called this session.
-
-**Not for:** non-MCP built-in tools (they aren't name-encoded as `mcp__…`).
+**Core principle:** detect real usage from the session transcript, not from intent. It counts `tool_use` calls to `mcp__headroom__headroom_compress` and sums the `tokens_saved` those calls actually reported — so it can't lie. The dollar figure prices those tokens at the **session model's input rate** (a conservative floor — see below).
 
 ## Prerequisites
 
 - The headroom MCP server is registered (tools appear as `mcp__headroom__headroom_compress`, `…_retrieve`, `…_stats`).
-- `jq` is on PATH.
+- `jq` on PATH.
 
 ## How It Works
 
-Claude Code pipes a JSON blob to the status-line command on **stdin**, containing `transcript_path` — the current session's JSONL file. The command reads it once and derives three things:
+All logic lives in one shipped script, `scripts/statusline.sh` (in this plugin, two directories above this SKILL.md). The installer copies it to `~/.claude/headroom-statusline.sh` and points `statusLine.command` at it. Per render it:
 
-1. **Call count** — `tool_use` blocks whose `name` is `mcp__headroom__headroom_compress`.
-2. **Tokens saved** — for each compress `tool_use.id`, find the `tool_result` with the matching `tool_use_id`, parse its inner JSON text, and sum `tokens_saved`. **Link by id — never grep the file for `tokens_saved`:** that substring also appears in `total_tokens_saved` (from `stats`) and in your own tool outputs that mention the field, both of which would corrupt the total.
-3. **Decay** — the timestamp of the last compress `tool_use`; if it's within 60s, show bright/active, else dim to idle (retaining the running total).
+1. Reads the status-line **stdin JSON once** — `transcript_path`, `model.id`, `session_id`.
+2. **Counts & sums** — `tool_use` blocks named `mcp__headroom__headroom_compress`; `tokens_saved` from results linked by `tool_use_id` (never grep for raw strings — `headroom_stats` results and prose mentions are false positives).
+3. **Money** — `tokens_saved × input-$/MTok` for the session's `model.id`, from a table in `price_per_mtok()`. Unknown model → tokens-only badge (never a wrong dollar figure). This is the *floor*: compressed content would have re-entered context on later turns (mostly at the 0.1× cache-read rate), so real savings compound above it.
+4. **Cache** — per-session results cached in `~/.claude/headroom-indicator/session-<id>.cache` keyed on transcript byte size; unchanged size skips the jq parse (a `stat` call instead of an O(transcript) parse every second).
+5. **Lifetime** — a session writes `session-<id>.totals` (`tokens usd`) only once it has actually saved tokens (sessions that never compress anything don't leave a file behind); if the session's model changes mid-session, the recorded usd is only ever raised, never lowered, by re-pricing at the new rate — a switch to a cheaper or unpriced model can't shrink what's already been credited. The badge sums existing totals files into `| $X all-time` once more than one session exists.
+6. **Decay** — timestamp of the last compress; within 60s → bright green, else dim (totals retained).
 
 ## Install
 
-**Use the Python installer below — do not hand-write the `statusLine`.** It is *merge-aware*: if the user already has a custom status line, it **appends** the headroom segment to it (backing the original up under `_headroomStatusLineBackup`) instead of clobbering it. If there's no existing status line, it installs the headroom segment standalone. It's idempotent — re-running never double-appends. **Never** just overwrite `statusLine` yourself; that silently destroys the user's existing prompt.
+Two steps: copy the script, then wire the status line. **Use the Python installer below — do not hand-write the `statusLine`.** It is *merge-aware*: an existing custom status line is preserved (backed up under `_headroomStatusLineBackup`) and the headroom segment appended. Re-running is idempotent and also refreshes the copied script (the upgrade path).
+
+Set `PLUGIN_ROOT` to this plugin's root — the directory **two levels above this SKILL.md** (it contains `scripts/statusline.sh`):
 
 ```bash
 python3 - <<'PY'
-import json, pathlib
+import json, pathlib, shutil
+
+PLUGIN_ROOT = pathlib.Path("<absolute path of the directory two levels above this SKILL.md>")
+
+src = PLUGIN_ROOT / "scripts" / "statusline.sh"
+dest = pathlib.Path.home() / ".claude" / "headroom-statusline.sh"
+dest.parent.mkdir(parents=True, exist_ok=True)
+shutil.copyfile(src, dest)
+dest.chmod(0o755)
+
 p = pathlib.Path.home() / ".claude" / "settings.json"
 data = json.loads(p.read_text()) if p.exists() else {}
-MARK = "mcp__headroom__headroom_compress"
-# headroom segment: consumes already-captured stdin in $in, sets $hr
-HR_CORE = (
-    "tp=$(printf '%s' \"$in\" | jq -r '.transcript_path // empty' 2>/dev/null); n=0; saved=0; age=999999; "
-    "if [ -n \"$tp\" ] && [ -f \"$tp\" ]; then "
-    "n=$(jq -s '[.[]|.message.content[]?|select(.type==\"tool_use\" and .name==\"mcp__headroom__headroom_compress\")]|length' \"$tp\" 2>/dev/null); "
-    "saved=$(jq -s '([.[]|.message.content[]?|select(.type==\"tool_use\" and .name==\"mcp__headroom__headroom_compress\")|.id]) as $ids|[.[]|.message.content[]?|select(.type==\"tool_result\" and ((.tool_use_id) as $t|($ids|index($t))!=null))|.content[]?|.text? // empty|(try (fromjson.tokens_saved) catch 0)]|add // 0' \"$tp\" 2>/dev/null); "
-    "last=$(jq -r 'select(.message.content)|select(any(.message.content[]?;.type==\"tool_use\" and .name==\"mcp__headroom__headroom_compress\"))|.timestamp' \"$tp\" 2>/dev/null | tail -1); "
-    "if [ -n \"$last\" ]; then le=$(date -d \"$last\" +%s 2>/dev/null || date -j -u -f \"%Y-%m-%dT%H:%M:%S\" \"${last%%.*}\" +%s 2>/dev/null); [ -n \"$le\" ] && age=$(( $(date -u +%s) - le )); fi; "
-    "fi; n=${n:-0}; saved=${saved:-0}; "
-    "if [ \"$n\" -gt 0 ] 2>/dev/null; then "
-    "if [ \"$age\" -le 60 ] 2>/dev/null; then hr=$(printf '\\033[32m● headroom · ~%s tok saved · %s×\\033[0m' \"$saved\" \"$n\"); "
-    "else hr=$(printf '\\033[90m○ headroom idle · ~%s tok saved · %s×\\033[0m' \"$saved\" \"$n\"); fi; "
-    "else hr=$(printf '\\033[31m○ headroom idle (not compressing yet)\\033[0m'); fi"
-)
+MARK = "headroom-statusline.sh"                    # v2 marker
+OLD_MARK = "mcp__headroom__headroom_compress"      # v1 one-liner marker
+HR = 'bash "' + str(dest) + '"'
+
 existing = data.get("statusLine"); backup = data.get("_headroomStatusLineBackup"); base = None
 if isinstance(backup, dict) and backup.get("type") == "command" and backup.get("command"):
-    base = backup                                          # re-run after a merge → re-merge onto true original
-elif isinstance(existing, dict) and existing.get("type") == "command" \
-        and existing.get("command") and MARK not in existing["command"]:
-    base = existing                                        # a real pre-existing custom status line
+    base = backup                                  # re-run/upgrade after a merge → re-merge onto true original
+elif isinstance(existing, dict) and existing.get("type") == "command" and existing.get("command") \
+        and MARK not in existing["command"] and OLD_MARK not in existing["command"]:
+    base = existing                                # a real pre-existing custom status line
 if base is not None:
     data["_headroomStatusLineBackup"] = base
-    cmd = ("in=$(cat); left=$(printf '%s' \"$in\" | { " + base["command"] + "; }); "
-           + HR_CORE + "; printf '%s  %s' \"$left\" \"$hr\"")
+    cmd = ('in=$(cat); left=$(printf \'%s\' "$in" | { ' + base["command"] + '; }); '
+           'hr=$(printf \'%s\' "$in" | ' + HR + '); printf \'%s  %s\' "$left" "$hr"')
     mode = "merged (appended to your existing status line)"
 else:
-    cmd = "in=$(cat); " + HR_CORE + "; printf '%s' \"$hr\""
+    cmd = HR
     mode = "installed (standalone)"
 data["statusLine"] = {"type": "command", "command": cmd, "refreshInterval": 1}
-p.parent.mkdir(parents=True, exist_ok=True)
 p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 print("headroom status line", mode)
 PY
 ```
 
-**To restore** the user's original status line later: copy `_headroomStatusLineBackup` back over `statusLine` and delete the backup key.
+Upgrading from v1 is the same command: a v1 standalone one-liner (contains `OLD_MARK`) is replaced outright; a v1 merged install re-merges from the backup.
 
-<details>
-<summary>The raw headroom segment (reference — what the installer writes when there's no existing status line)</summary>
-
-```json
-  "statusLine": {
-    "type": "command",
-    "command": "in=$(cat); tp=$(printf '%s' \"$in\" | jq -r '.transcript_path // empty' 2>/dev/null); n=0; saved=0; age=999999; if [ -n \"$tp\" ] && [ -f \"$tp\" ]; then n=$(jq -s '[.[]|.message.content[]?|select(.type==\"tool_use\" and .name==\"mcp__headroom__headroom_compress\")]|length' \"$tp\" 2>/dev/null); saved=$(jq -s '([.[]|.message.content[]?|select(.type==\"tool_use\" and .name==\"mcp__headroom__headroom_compress\")|.id]) as $ids|[.[]|.message.content[]?|select(.type==\"tool_result\" and ((.tool_use_id) as $t|($ids|index($t))!=null))|.content[]?|.text? // empty|(try (fromjson.tokens_saved) catch 0)]|add // 0' \"$tp\" 2>/dev/null); last=$(jq -r 'select(.message.content)|select(any(.message.content[]?;.type==\"tool_use\" and .name==\"mcp__headroom__headroom_compress\"))|.timestamp' \"$tp\" 2>/dev/null | tail -1); if [ -n \"$last\" ]; then le=$(date -d \"$last\" +%s 2>/dev/null || date -j -u -f \"%Y-%m-%dT%H:%M:%S\" \"${last%%.*}\" +%s 2>/dev/null); [ -n \"$le\" ] && age=$(( $(date -u +%s) - le )); fi; fi; n=${n:-0}; saved=${saved:-0}; if [ \"$n\" -gt 0 ] 2>/dev/null; then if [ \"$age\" -le 60 ] 2>/dev/null; then printf '\\033[32m● headroom · ~%s tok saved · %s×\\033[0m' \"$saved\" \"$n\"; else printf '\\033[90m○ headroom idle · ~%s tok saved · %s×\\033[0m' \"$saved\" \"$n\"; fi; else printf '\\033[31m○ headroom idle (not compressing yet)\\033[0m'; fi",
-    "refreshInterval": 1
-  }
-```
-</details>
+**To restore** the user's original status line: copy `_headroomStatusLineBackup` back over `statusLine`, delete the backup key, and optionally remove `~/.claude/headroom-statusline.sh` and `~/.claude/headroom-indicator/`.
 
 ## Verify Before Trusting It
 
-Confirm valid JSON, then drive the states with synthetic stdin:
+Run the plugin's test suite from the plugin root — it drives the script with synthetic transcripts (active badge, stats-only false positive, money math, unknown-model fallback, cache behavior, lifetime totals):
 
 ```bash
-jq -e '.statusLine.command' ~/.claude/settings.json >/dev/null && echo "JSON OK"
-CMD=$(jq -r '.statusLine.command' ~/.claude/settings.json)
+./test.sh
+```
 
-# active — a compress call "now" + its linked result with tokens_saved → green, tokens shown
+Or drive the installed copy by hand:
+
+```bash
 NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
 printf '%s\n' \
  "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"mcp__headroom__headroom_compress\"}]}}" \
  '{"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"{\"tokens_saved\": 500}"}]}]}}' > /tmp/hr.jsonl
-echo '{"transcript_path":"/tmp/hr.jsonl"}' | bash -c "$CMD"; echo   # → green ● headroom · ~500 tok saved · 1×
-
-# never used — a stats call only (no compress) → red idle, no false positive
-printf '%s\n' '{"message":{"content":[{"type":"tool_use","id":"s1","name":"mcp__headroom__headroom_stats"}]}}' > /tmp/hr.jsonl
-echo '{"transcript_path":"/tmp/hr.jsonl"}' | bash -c "$CMD"; echo   # → red ○ idle (not compressing yet)
+printf '{"transcript_path":"/tmp/hr.jsonl","model":{"id":"claude-opus-4-8"},"session_id":"verify"}' \
+  | bash ~/.claude/headroom-statusline.sh; echo    # → green ● … ~500 tok · 0.25¢ · 1×
 rm -f /tmp/hr.jsonl
 ```
 
@@ -120,23 +103,24 @@ rm -f /tmp/hr.jsonl
 
 | Mistake | Fix |
 |---|---|
-| `grep`-ing the transcript for the tool name or `tokens_saved` | Use `jq` on `.type=="tool_use"` / link results by `tool_use_id`. The raw strings appear in prose, `stats` results (`total_tokens_saved`), and your own tool outputs — all false positives. |
+| `grep`-ing the transcript for the tool name or `tokens_saved` | Use `jq` on `.type=="tool_use"` / link results by `tool_use_id` (as the script does). Raw strings appear in prose, `stats` results (`total_tokens_saved`), and your own outputs — all false positives. |
 | Counting `headroom_stats`/`retrieve` too | Count only `headroom_compress` — inspecting headroom shouldn't flip it to active. |
-| `.text?//empty` fails to parse | jq reads `?//` as one bad token — write `.text? // empty` **with spaces**. |
-| Glyphs print as literal `●` / `—` | Put real UTF-8 characters in the command, not `\u` escapes — shell `printf` won't decode `\uXXXX`. |
-| ANSI shows as text | `\033` isn't valid JSON; it must be `\\033` in settings.json so the shell sees `\033`. The Python installer handles this. |
-| Timestamp parse fails on Linux/macOS | Use GNU `date -d "$ts"` with a BSD `date -j -u -f … "${ts%%.*}"` fallback (as shipped). |
-| `transcript_path` read fails | Capture **stdin once** (`in=$(cat)`) then parse — the JSON arrives on stdin, and the transcript file is read separately by path. |
-| Clobbering an existing status line | The user may already have a custom `statusLine`. Use the merge-aware installer (it appends + backs up to `_headroomStatusLineBackup`); never blindly overwrite `statusLine`. |
-| A status line reads stdin twice | stdin is consumable once. The merged command does `in=$(cat)` first, then feeds the original via `printf '%s' "$in" \| { orig; }` and reuses `$in` for the headroom segment. |
+| Hand-editing `~/.claude/headroom-statusline.sh` | It's a copy; re-running the installer overwrites it. Edit `scripts/statusline.sh` in the plugin and re-run the installer. |
+| Guessing a price for an unknown model | Don't — the script deliberately falls back to tokens-only. Add the model to `price_per_mtok()` instead. |
+| Clobbering an existing status line | Use the merge-aware installer; never blindly overwrite `statusLine`. |
+| A merged status line reading stdin twice | stdin is consumable once. The merged command does `in=$(cat)` first and feeds `$in` to both segments. |
+| Timestamp/size parsing breaking on one OS | The script ships GNU→BSD fallbacks for `date` and `stat` — keep both when editing. |
 
 ## Reload Caveat
 
-Claude Code's settings watcher reliably reloads files that existed at session start. After installing, the line should appear on the next render; if not, open `/statusline` or `/config` once to force a reload, or it will be present next session. You can't trigger that reload from inside a turn.
+Claude Code's settings watcher reliably reloads files that existed at session start. After installing, the line should appear on the next render; if not, open `/statusline` or `/config` once to force a reload, or it will be there next session.
 
 ## Customize
 
-- **Decay window:** the `60` in `[ "$age" -le 60 ]` is the seconds-since-last-compress before it dims back to idle. Raise/lower to taste; set it huge to make "active" sticky for the whole session.
-- **Different MCP tool:** swap the `mcp__headroom__headroom_compress` string for any `mcp__server__tool` (drop the `tokens_saved` sum if that tool doesn't report one).
-- **Colors:** `\033[32m` green (active), `\033[90m` dim grey (decayed), `\033[31m` red (never used).
-- **Refresh cadence:** `refreshInterval` seconds (also re-renders on message events).
+All knobs live in `scripts/statusline.sh` (edit, then re-run the installer):
+
+- **Decay window:** the `60` in `[ "$age" -le 60 ]`.
+- **Prices:** the `price_per_mtok()` case table (input $/MTok; hand-maintained per release).
+- **State dir:** `HEADROOM_STATE_DIR` env var (used by tests).
+- **Colors:** `\033[32m` green (active), `\033[90m` dim (decayed), `\033[31m` red (never used).
+- **Different MCP tool:** change `TOOL=` (drop the `tokens_saved` sum if that tool doesn't report one).

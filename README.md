@@ -28,11 +28,17 @@ Every second, it looks at what your Claude session has actually done and updates
 | Badge | Colour | Meaning |
 |---|---|---|
 | `○ headroom idle (not compressing yet)` | 🔴 red | headroom hasn't compressed anything yet this session |
-| `● headroom · ~770 tok saved · 2×` | 🟢 green | a compression just happened — shows **tokens saved** and **how many times** (`2×`) |
-| `○ headroom idle · ~770 tok saved · 2×` | ⚪ grey | it's been quiet for 60s, so it dims back to idle — but keeps your session's total tokens saved |
+| `● headroom · ~2.4k tok · $0.007 · 3× \| $1.83 all-time` | 🟢 green | a compression just happened — tokens saved, **money saved**, how many times, and your all-time total |
+| `○ headroom idle · ~2.4k tok · $0.007 · 3× \| $1.83 all-time` | ⚪ grey | quiet for 60s — dims, but keeps the totals |
 
 - The **token count is the running total for the whole session** (it adds up every compression).
 - It **resets to red** when you start a brand-new Claude session.
+
+## How the money number works
+
+The badge prices the tokens headroom saved at the **input rate of the model your session is running** (e.g. $5/MTok on Opus, $10/MTok on Fable). If the model isn't in the built-in price table, the badge just shows tokens — it never guesses a dollar figure. `all-time` is the sum across all your sessions on this machine (stored in `~/.claude/headroom-indicator/`).
+
+This is a deliberately **conservative floor**: compressed content would otherwise re-enter the context on every later API turn (mostly at the cheaper cache-read rate), so the true savings compound above the number shown.
 
 ---
 
@@ -66,10 +72,11 @@ When a new version ships:
 ```
 /plugin marketplace update headroom-tools
 ```
+Then ask Claude once more: *"set up the headroom usage indicator"* — this refreshes the copied script at `~/.claude/headroom-statusline.sh`.
 
 ## Uninstall
 
-Remove the `"statusLine"` block from `~/.claude/settings.json` (or ask Claude to "remove the headroom status line"), then `/plugin uninstall headroom-usage-indicator@headroom-tools`.
+Remove the `"statusLine"` block from `~/.claude/settings.json` (or ask Claude to "remove the headroom status line"), then `/plugin uninstall headroom-usage-indicator@headroom-tools`. Also remove `~/.claude/headroom-statusline.sh` and `~/.claude/headroom-indicator/`.
 
 ---
 
@@ -82,7 +89,7 @@ headroom (Step 1) probably isn't installed or isn't registered. This package can
 This is a *reminder/gauge*, not an auto-compressor. headroom (with its own instructions) decides when to compress; this badge just shows you whether it happened.
 
 **I already have a custom status line — will this wipe it?**
-No. As of v1.2.0 the installer is **merge-aware**: it *appends* the headroom badge to your existing status line (so you keep `Model · ctx · dir (branch)` and gain the headroom dot) and backs up your original under `_headroomStatusLineBackup` in `settings.json`. To restore, copy that key back over `statusLine`.
+No. The installer is **merge-aware**: it *appends* the headroom badge to your existing status line (so you keep `Model · ctx · dir (branch)` and gain the headroom dot) and backs up your original under `_headroomStatusLineBackup` in `settings.json`. To restore, copy that key back over `statusLine`.
 
 **Can I change the colours / the 60-second decay / show a different tool?**
 Yes — see the **Customize** section in `skills/headroom-usage-indicator/SKILL.md`. The same pattern works for any MCP tool (`mcp__server__tool`), not just headroom.
@@ -94,7 +101,7 @@ No. It's a local shell command reading your local session file. Nothing leaves y
 
 ## What's inside
 
-- `skills/headroom-usage-indicator/SKILL.md` — the full, tested skill: the ready-to-paste `statusLine` config, a safe Python installer that merges into your settings, how it works, a common-mistakes table, verification steps, and customization notes.
+- `skills/headroom-usage-indicator/SKILL.md` — the full, tested skill: a safe Python installer that copies `scripts/statusline.sh` to `~/.claude/headroom-statusline.sh` and merges the status line into your settings, how it works, a common-mistakes table, verification steps, and customization notes.
 
 ## License
 
