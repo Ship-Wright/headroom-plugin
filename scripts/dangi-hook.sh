@@ -18,6 +18,7 @@ STATE_DIR="${HEADROOM_STATE_DIR:-$HOME/.claude/headroom-indicator}"
 in=$(cat)
 
 tool=$(printf '%s' "$in" | jq -r '.tool_name // empty' 2>/dev/null) || exit 0
+tool=$(printf '%s' "$tool" | tr -cd 'A-Za-z0-9_.-')   # defensive: tool name feeds JSON + AppleScript
 [ -n "$tool" ] || exit 0
 case "$tool" in "$HPREFIX"*) exit 0 ;; esac
 

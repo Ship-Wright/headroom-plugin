@@ -32,7 +32,7 @@ All logic lives in one shipped script, `scripts/statusline.sh` (in this plugin, 
 5. **Cache** — per-session results cached in `~/.claude/headroom-indicator/session-<id>.cache` keyed on transcript byte size; unchanged size skips the jq parse (a `stat` call instead of an O(transcript) parse every second). Cache format: `size|n|saved|last_ts|missed`.
 6. **Lifetime** — a session writes `session-<id>.totals` (`tokens usd`) only once it has actually saved tokens (sessions that never compress anything don't leave a file behind); if the session's model changes mid-session, the recorded usd is only ever raised, never lowered, by re-pricing at the new rate — a switch to a cheaper or unpriced model can't shrink what's already been credited. The badge sums existing totals files into `| $X all-time` once more than one session exists.
 7. **Decay** — timestamp of the last compress; within 60s → bright green, else dim (totals retained).
-8. **Dangi (real-time)** — a PostToolUse hook (`~/.claude/dangi-hook.sh`) inspects every tool result as it lands; when one is ≥ 4 KB and not from a headroom tool, it injects a one-line `additionalContext` nudge for Claude (at most once per 60 s per session) and shows a macOS notification (at most once per 300 s; skipped when `osascript` is absent or `DANGI_NO_NOTIFY` is set). The hook always exits 0 and prints nothing except the single JSON nudge. Note: outputs larger than ~100 KB reach hooks pre-summarized, so a huge blob may evade the real-time ping — the transcript-based `missed` counter still catches it.
+8. **Dangi (real-time)** — a PostToolUse hook (`~/.claude/dangi-hook.sh`) inspects every tool result as it lands; when one is ≥ 4 KB and not from a headroom tool, it injects a one-line `additionalContext` nudge for Claude (at most once per 60 s per session) and shows a macOS notification (at most once per 300 s; skipped when `osascript` is absent or `DANGI_NO_NOTIFY` is set). The hook always exits 0 and prints nothing except the single JSON nudge. Note: Claude Code truncates very large outputs before hooks see them (per docs, ~10,000 chars with file-reference replacement), so a huge blob may evade the real-time ping — the transcript-based `missed` counter still catches it.
 
 ## Install
 
@@ -80,8 +80,10 @@ else:
 data["statusLine"] = {"type": "command", "command": cmd, "refreshInterval": 1}
 
 HOOK_MARK = "dangi-hook.sh"
-hooks = data.setdefault("hooks", {})
-ptu = hooks.setdefault("PostToolUse", [])
+hooks = data.get("hooks")
+hooks = data["hooks"] = hooks if isinstance(hooks, dict) else {}
+ptu = hooks.get("PostToolUse")
+ptu = hooks["PostToolUse"] = ptu if isinstance(ptu, list) else []
 if not any(HOOK_MARK in json.dumps(e) for e in ptu):
     ptu.append({
         "matcher": "*",

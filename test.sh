@@ -245,7 +245,7 @@ else
   FAIL=$((FAIL+1))
 fi
 
-# --- 20. status-line mascot
+# --- 21. status-line mascot
 export HEADROOM_STATE_DIR="$TMP/state-mascot"
 big_result_event m1 Bash 4096 > "$TMP/t_mascot.jsonl"
 out=$(badge "$TMP/t_mascot.jsonl" claude-opus-4-8 sess-m1)
