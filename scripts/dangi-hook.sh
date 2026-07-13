@@ -33,7 +33,7 @@ kb=$(( size / 1024 ))
 state="$STATE_DIR/session-$sid.dangi"
 last_nudge=0; last_notify=0
 if [ -f "$state" ]; then
-  read -r last_nudge last_notify < "$state" 2>/dev/null || true
+  { read -r last_nudge last_notify < "$state"; } 2>/dev/null || true
 fi
 case "$last_nudge" in (*[!0-9]*|"") last_nudge=0 ;; esac
 case "$last_notify" in (*[!0-9]*|"") last_notify=0 ;; esac
@@ -51,7 +51,7 @@ if [ $(( now - last_nudge )) -ge "$NUDGE_COOLDOWN" ]; then
 fi
 
 if mkdir -p "$STATE_DIR" 2>/dev/null; then
-  printf '%s %s\n' "$last_nudge" "$last_notify" > "$state" 2>/dev/null || true
+  { printf '%s %s\n' "$last_nudge" "$last_notify" > "$state"; } 2>/dev/null || true
 fi
 
 if [ "$nudge" -eq 1 ]; then

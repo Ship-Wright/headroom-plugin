@@ -232,6 +232,19 @@ out=$(printf 'not json at all' | bash "$DANGI"); rc=$?
 check_absent "dangi: garbage stdin silent" "additionalContext" "$out"
 check "dangi: garbage stdin exit 0" "0" "$rc"
 
+# 20. stderr purity: an unreadable state file must not leak bash diagnostics
+hook_input Bash 5000 dangi-s5 | bash "$DANGI" >/dev/null 2>/dev/null   # first call creates the state file
+chmod 000 "$HEADROOM_STATE_DIR/session-dangi-s5.dangi"
+err=$(hook_input Bash 5000 dangi-s5 | bash "$DANGI" 2>&1 >/dev/null)
+chmod 644 "$HEADROOM_STATE_DIR/session-dangi-s5.dangi"
+if [ -z "$err" ]; then
+  echo "ok - dangi: stderr silent on unreadable state"; PASS=$((PASS+1))
+else
+  echo "FAIL - dangi: stderr silent on unreadable state"
+  echo "    got stderr: $err"
+  FAIL=$((FAIL+1))
+fi
+
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck "$SCRIPT" "$DANGI"; then
