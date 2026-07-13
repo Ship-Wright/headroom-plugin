@@ -233,6 +233,38 @@ check_absent "dangi: Write excluded" "additionalContext" "$out"
 out=$(hook_input Bash 9000 dangi-s7 | bash "$DANGI")
 check "dangi: nudge points to hcat" "hcat" "$out"
 check "dangi: nudge offers subagent fallback" "subagent" "$out"
+
+# image tool_responses are base64 blobs — not text-compressible
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Read", session_id:"dangi-s8",
+  tool_response:{type:"image", source:{data:("A"*9000)}}}' | bash "$DANGI")
+check_absent "dangi: image response excluded" "additionalContext" "$out"
+out=$(hook_input WebFetch 9000 dangi-s9 | bash "$DANGI")
+check_absent "dangi: WebFetch excluded" "additionalContext" "$out"
+
+# size must be bytes, not codepoints: 3000 two-byte chars = 6000 bytes ≥ 4096
+out=$(jq -n --arg sid dangi-s10 '{hook_event_name:"PostToolUse", tool_name:"Bash",
+  session_id:$sid, tool_response:("é"*3000)}' | bash "$DANGI")
+check "dangi: multibyte content counted in bytes" "additionalContext" "$out"
+
+# notification branch: a fake osascript on PATH must get invoked
+FAKEBIN="$TMP/fakebin"; mkdir -p "$FAKEBIN"
+printf '#!/bin/sh\necho "$@" >> "%s/osascript.calls"\n' "$TMP" > "$FAKEBIN/osascript"
+chmod +x "$FAKEBIN/osascript"
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"dangi-s11",
+  tool_response:("x"*9000)}' | env -u DANGI_NO_NOTIFY PATH="$FAKEBIN:$PATH" bash "$DANGI")
+for _ in 1 2 3 4 5 6 7 8 9 10; do   # osascript fires in the background — poll up to 2s
+  [ -s "$TMP/osascript.calls" ] && break
+  sleep 0.2
+done
+check "dangi: notification invoked" "display notification" "$(cat "$TMP/osascript.calls" 2>/dev/null)"
+check "dangi: notification names the tool" "Bash" "$(cat "$TMP/osascript.calls" 2>/dev/null)"
+
+# a stale lock must never wedge the hook
+mkdir -p "$HEADROOM_STATE_DIR/.lock-dangi-s12" 2>/dev/null
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"dangi-s12",
+  tool_response:("x"*9000)}' | bash "$DANGI"); rc=$?
+check "dangi: stale lock tolerated (exit 0)" "0" "$rc"
+check "dangi: stale lock still nudges" "additionalContext" "$out"
 out=$(hook_input mcp__headroom__headroom_compress 9000 dangi-s4 | bash "$DANGI")
 check_absent "dangi: headroom tools excluded" "additionalContext" "$out"
 out=$(printf 'not json at all' | bash "$DANGI"); rc=$?
@@ -343,9 +375,76 @@ if [ -n "$HEADROOM_PY" ]; then
   # kill switch
   out=$(gate_input "$TMP/hc_big.json" gate-s4 | HCAT_GATE_OFF=1 bash "$GATE")
   check_absent "gate: HCAT_GATE_OFF disables" "deny" "$out"
+
+  # --- 29. gate covers Bash raw dumps (tell, not nudge)
+  bash_gate_input() {  # bash_gate_input <command> <session-id>
+    jq -n --arg cmd "$1" --arg sid "$2" \
+      '{hook_event_name:"PreToolUse", tool_name:"Bash", session_id:$sid, tool_input:{command:$cmd}}'
+  }
+  out=$(bash_gate_input "cat $TMP/hc_big.json" gate-b1 | bash "$GATE")
+  check "gate/bash: bare cat of big json denied" '"permissionDecision":"deny"' "$out"
+  check "gate/bash: reason names hcat" "hcat" "$out"
+  out=$(bash_gate_input "cat $TMP/hc_big.json" gate-b1 | bash "$GATE")
+  check_absent "gate/bash: retry same file allowed" "deny" "$out"
+  out=$(bash_gate_input "cat $TMP/hc_big.json | jq '.[0]'" gate-b2 | bash "$GATE")
+  check_absent "gate/bash: piped cat allowed (real processing)" "deny" "$out"
+  out=$(bash_gate_input "head -c 200 $TMP/hc_big.json" gate-b2 | bash "$GATE")
+  check_absent "gate/bash: bounded head allowed" "deny" "$out"
+  out=$(bash_gate_input "cat $TMP/hc_small.json" gate-b2 | bash "$GATE")
+  check_absent "gate/bash: small file allowed" "deny" "$out"
+  out=$(bash_gate_input "cat $TMP/hc_big.dart" gate-b2 | bash "$GATE")
+  check_absent "gate/bash: non-structured ext allowed" "deny" "$out"
+  out=$(bash_gate_input "cat \"$TMP/hc_big.json\"" gate-b3 | bash "$GATE")
+  check "gate/bash: quoted path still denied" '"permissionDecision":"deny"' "$out"
 else
   echo "skip - gate deny tests (headroom venv not found)"
 fi
+
+# --- 30. badge counts hcat receipts from the transcript
+export HEADROOM_STATE_DIR="$TMP/state-hcat-badge"
+
+hcat_event() {  # hcat_event <tool-use-id> <before-tok> <after-tok> [pad-bytes]
+  local pad=""
+  [ -n "${4:-}" ] && pad=$(head -c "$4" /dev/zero | tr '\0' 'y')
+  printf '%s\n%s\n' \
+    "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"$1\",\"name\":\"Bash\"}]}}" \
+    "{\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"$1\",\"content\":[{\"type\":\"text\",\"text\":\"── hcat: /tmp/x.json · 10 lines · 5.0 KB · ~$2 tok → ~$3 tok (60.0% saved) · original on disk\\n$pad\"}]}]}}"
+}
+
+# hcat alone: green badge, savings counted, 1×
+hcat_event h1 1000 400 > "$TMP/t_hcat.jsonl"
+out=$(badge "$TMP/t_hcat.jsonl" claude-opus-4-8 sess-h1)
+check "hcat badge: green dot"        "●"        "$out"
+check "hcat badge: tokens counted"   "600"      "$out"
+check "hcat badge: count"            "1×"       "$out"
+
+# a big hcat receipt is NOT a missed opportunity (it IS compressed)
+hcat_event h2 9000 3000 6000 > "$TMP/t_hcat_big.jsonl"
+out=$(badge "$TMP/t_hcat_big.jsonl" claude-opus-4-8 sess-h2)
+check_absent "hcat badge: receipt not counted as missed" "missed" "$out"
+check "hcat badge: mascot asleep" "😴 dangi" "$out"
+
+# mixed: MCP compress (500) + hcat (600) = 1.1k, 2×
+{ compress_event m1 500; hcat_event h3 1000 400; } > "$TMP/t_mixed.jsonl"
+out=$(badge "$TMP/t_mixed.jsonl" claude-opus-4-8 sess-hm)
+check "hcat badge: mixed total" "1.1k" "$out"
+check "hcat badge: mixed count" "2×"   "$out"
+
+# a persisted big output buries the receipt mid-text after a preview banner
+printf '%s\n%s\n' \
+  "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"h5\",\"name\":\"Bash\"}]}}" \
+  '{"message":{"content":[{"type":"tool_result","tool_use_id":"h5","content":[{"type":"text","text":"Output too large (32.1KB). Full output saved.\nPreview (first 2KB):\n── hcat: /tmp/z.json · 9 lines · 8.0 KB · ~2000 tok → ~800 tok (60.0% saved) · original on disk\n..."}]}]}}' \
+  > "$TMP/t_persist.jsonl"
+out=$(badge "$TMP/t_persist.jsonl" claude-opus-4-8 sess-hpers)
+check "hcat badge: persisted preview receipt counted" "1.2k" "$out"
+
+# passthrough receipts (no "→") are not compressions
+printf '%s\n%s\n' \
+  "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"h4\",\"name\":\"Bash\"}]}}" \
+  '{"message":{"content":[{"type":"tool_result","tool_use_id":"h4","content":[{"type":"text","text":"── hcat: /tmp/y.txt · 3 lines · 0.1 KB · passthrough (compression would save 0.0%)\nshort prose line"}]}]}}' \
+  > "$TMP/t_pass.jsonl"
+out=$(badge "$TMP/t_pass.jsonl" claude-opus-4-8 sess-hp)
+check "hcat badge: passthrough not counted" "not compressing yet" "$out"
 
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then

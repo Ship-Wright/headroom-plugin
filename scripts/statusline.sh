@@ -47,34 +47,43 @@ fmt_usd() {  # dollars -> "$0.03" (>= 1 cent) or "0.42¢"
 
 n=0; saved=0; last_ts=""; missed=0
 
-compute() {  # fills n / saved / last_ts from the transcript at $tp
-  n=$(jq -s --arg tool "$TOOL" \
-    '[.[]|.message.content[]?|select(.type=="tool_use" and .name==$tool)]|length' \
-    "$tp" 2>/dev/null)
-  saved=$(jq -s --arg tool "$TOOL" \
-    '([.[]|.message.content[]?|select(.type=="tool_use" and .name==$tool)|.id]) as $ids
-     | [.[]|.message.content[]?
-        | select(.type=="tool_result" and ((.tool_use_id) as $t|($ids|index($t))!=null))
-        | .content[]? | .text? // empty | (try (fromjson.tokens_saved) catch 0)]
-     | add // 0' \
-    "$tp" 2>/dev/null)
-  last_ts=$(jq -r --arg tool "$TOOL" \
-    'select(.message.content)|select(any(.message.content[]?;.type=="tool_use" and .name==$tool))|.timestamp' \
-    "$tp" 2>/dev/null | tail -1)
-  big=$(jq -s --arg pfx "$HPREFIX" --argjson min "$NUDGE_BYTES" \
-    '([.[]|.message.content[]?|select(.type=="tool_use" and ((.name // "")|startswith($pfx)))|.id]) as $hids
-     | [.[]|.message.content[]?
-        | select(.type=="tool_result" and ((.tool_use_id) as $t|($hids|index($t))==null))
-        | (.content
-           | if type=="string" then length
-             elif type=="array" then ([.[]? | .text? // ""] | join("") | length)
-             else 0 end)
-        | select(. >= $min)]
-     | length' \
-    "$tp" 2>/dev/null)
-  big=${big:-0}
-  n=${n:-0}; saved=${saved:-0}
+# One slurped jq pass fills n / saved / last_ts / missed. Compressions are
+# MCP compress calls PLUS hcat receipts — tool_results whose text carries the
+# "── hcat: … ~B tok → ~A tok" header (matched at any line start: persisted
+# big outputs prepend a preview banner). Passthrough receipts have no arrow
+# and count as nothing. Receipts are excluded from "big" (they ARE the
+# compression, not a missed opportunity), so missed stays big − MCP-count.
+compute() {
+  local out big hn hsaved
+  out=$(jq -rs --arg tool "$TOOL" --arg pfx "$HPREFIX" --argjson min "$NUDGE_BYTES" '
+    def txt: (.content | if type=="string" then .
+                         elif type=="array" then ([.[]? | .text? // ""] | join(""))
+                         else "" end);
+    def is_receipt: test("(^|\\n)── hcat: ");
+    ([.[]|.message.content[]? | select(.type=="tool_use" and .name==$tool) | .id]) as $mids
+    | ([.[]|.message.content[]? | select(.type=="tool_use" and ((.name // "")|startswith($pfx))) | .id]) as $hpids
+    | ([.[]|.message.content[]? | select(.type=="tool_result")
+        | {id: (.tool_use_id // ""), t: txt}]) as $res
+    | ($res | map(select(.t | is_receipt)
+        | (try (.t | capture("~(?<b>[0-9]+) tok → ~(?<a>[0-9]+) tok")) catch null) as $c
+        | select($c != null)
+        | {id: .id, s: (($c.b|tonumber) - ($c.a|tonumber))})) as $rcpt
+    | ($res | map(select(.id as $t | $mids | index($t))
+        | (try (.t | fromjson.tokens_saved) catch 0) // 0) | add // 0) as $saved
+    | ($res | map(select(((.id as $t | $hpids | index($t)) == null)
+        and ((.t | is_receipt) | not)
+        and ((.t | length) >= $min))) | length) as $big
+    | ($rcpt | map(.id)) as $rids
+    | ([.[] | select(.timestamp)
+        | select(any(.message.content[]?; .type=="tool_use"
+            and (((.name // "") == $tool) or ((.id // "") as $i | ($rids | index($i)) != null))))
+        | .timestamp] | max // "") as $last
+    | "\($mids|length)|\($saved)|\($big)|\($rcpt|length)|\($rcpt | map(.s) | add // 0)|\($last)"
+  ' "$tp" 2>/dev/null)
+  IFS='|' read -r n saved big hn hsaved last_ts <<< "${out:-}"
+  n=${n:-0}; saved=${saved:-0}; big=${big:-0}; hn=${hn:-0}; hsaved=${hsaved:-0}
   if [ "$big" -gt "$n" ] 2>/dev/null; then missed=$((big - n)); else missed=0; fi
+  n=$((n + hn)); saved=$((saved + hsaved))
 }
 
 if [ -n "$tp" ] && [ -f "$tp" ]; then
