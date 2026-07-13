@@ -1,6 +1,6 @@
 ---
 name: headroom-usage-indicator
-description: Use when you want a persistent visual reminder of whether the headroom MCP compression is actually being used this session — an always-visible status line that stays "idle" until headroom_compress is called, flips to "active" with the tokens AND money it saved (priced against the session's model), then decays back to idle after a quiet period. Also shows an all-time money-saved total across sessions.
+description: Use when you want a persistent visual reminder of whether the headroom MCP compression is actually being used this session — an always-visible status line that stays "idle" until headroom_compress is called, flips to "active" with the tokens AND money it saved (priced against the session's model), then decays back to idle after a quiet period. When idle, it also counts large tool results that were never compressed and shows them as an actionable nudge. Also shows an all-time money-saved total across sessions.
 ---
 
 # Headroom Usage Indicator
@@ -9,9 +9,9 @@ description: Use when you want a persistent visual reminder of whether the headr
 
 The headroom MCP compresses large, structured tool outputs to save context — but it's easy to *forget* to use it. This skill adds a Claude Code **status line** that is an honest, always-on indicator:
 
-- 🔴 `○ headroom idle (not compressing yet)` — until `headroom_compress` runs this session
+- 🔴 `○ headroom idle (not compressing yet)` — until `headroom_compress` runs this session; becomes `○ headroom idle · 4 big blobs uncompressed` when large tool results are going uncompressed
 - 🟢 `● headroom · ~2.4k tok · $0.007 · 3× | $1.83 all-time` — for 60s after a compression
-- ⚪ `○ headroom idle · ~2.4k tok · $0.007 · 3× | $1.83 all-time` — after 60s of quiet (keeps the totals)
+- ⚪ `○ headroom idle · ~2.4k tok · $0.007 · 3× · 2 missed | $1.83 all-time` — after 60s of quiet (keeps the totals; ` · N missed` appears when big results since your last compress went uncompressed)
 
 **Core principle:** detect real usage from the session transcript, not from intent. It counts `tool_use` calls to `mcp__headroom__headroom_compress` and sums the `tokens_saved` those calls actually reported — so it can't lie. The dollar figure prices those tokens at the **session model's input rate** (a conservative floor — see below).
 
@@ -26,10 +26,11 @@ All logic lives in one shipped script, `scripts/statusline.sh` (in this plugin, 
 
 1. Reads the status-line **stdin JSON once** — `transcript_path`, `model.id`, `session_id`.
 2. **Counts & sums** — `tool_use` blocks named `mcp__headroom__headroom_compress`; `tokens_saved` from results linked by `tool_use_id` (never grep for raw strings — `headroom_stats` results and prose mentions are false positives).
-3. **Money** — `tokens_saved × input-$/MTok` for the session's `model.id`, from a table in `price_per_mtok()`. Unknown model → tokens-only badge (never a wrong dollar figure). This is the *floor*: compressed content would have re-entered context on later turns (mostly at the 0.1× cache-read rate), so real savings compound above it.
-4. **Cache** — per-session results cached in `~/.claude/headroom-indicator/session-<id>.cache` keyed on transcript byte size; unchanged size skips the jq parse (a `stat` call instead of an O(transcript) parse every second).
-5. **Lifetime** — a session writes `session-<id>.totals` (`tokens usd`) only once it has actually saved tokens (sessions that never compress anything don't leave a file behind); if the session's model changes mid-session, the recorded usd is only ever raised, never lowered, by re-pricing at the new rate — a switch to a cheaper or unpriced model can't shrink what's already been credited. The badge sums existing totals files into `| $X all-time` once more than one session exists.
-6. **Decay** — timestamp of the last compress; within 60s → bright green, else dim (totals retained).
+3. **Missed opportunities** — counts `tool_result` blocks ≥ 4 KB (`NUDGE_BYTES=4096`) that don't belong to a headroom tool, then subtracts the number of compressions (each compression "forgives" one big blob, since compressing doesn't remove the original from the transcript). Shown on the red and grey idle badges only — never while actively compressing.
+4. **Money** — `tokens_saved × input-$/MTok` for the session's `model.id`, from a table in `price_per_mtok()`. Unknown model → tokens-only badge (never a wrong dollar figure). This is the *floor*: compressed content would have re-entered context on later turns (mostly at the 0.1× cache-read rate), so real savings compound above it.
+5. **Cache** — per-session results cached in `~/.claude/headroom-indicator/session-<id>.cache` keyed on transcript byte size; unchanged size skips the jq parse (a `stat` call instead of an O(transcript) parse every second). Cache format: `size|n|saved|last_ts|missed`.
+6. **Lifetime** — a session writes `session-<id>.totals` (`tokens usd`) only once it has actually saved tokens (sessions that never compress anything don't leave a file behind); if the session's model changes mid-session, the recorded usd is only ever raised, never lowered, by re-pricing at the new rate — a switch to a cheaper or unpriced model can't shrink what's already been credited. The badge sums existing totals files into `| $X all-time` once more than one session exists.
+7. **Decay** — timestamp of the last compress; within 60s → bright green, else dim (totals retained).
 
 ## Install
 
@@ -124,3 +125,4 @@ All knobs live in `scripts/statusline.sh` (edit, then re-run the installer):
 - **State dir:** `HEADROOM_STATE_DIR` env var (used by tests).
 - **Colors:** `\033[32m` green (active), `\033[90m` dim (decayed), `\033[31m` red (never used).
 - **Different MCP tool:** change `TOOL=` (drop the `tokens_saved` sum if that tool doesn't report one).
+- **Nudge threshold:** `NUDGE_BYTES` (default 4096) — minimum tool-result size that counts as a missed compression opportunity. Raise it if code-file reads trigger false nags.
