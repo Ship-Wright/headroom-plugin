@@ -27,9 +27,9 @@ Every second, it looks at what your Claude session has actually done and updates
 
 | Badge | Colour | Meaning |
 |---|---|---|
-| `○ headroom idle (not compressing yet)` | 🔴 red | headroom hasn't compressed anything yet this session |
+| `○ headroom idle (not compressing yet)` — or `○ headroom idle · 4 big blobs uncompressed` | 🔴 red | headroom hasn't compressed anything yet this session; the count appears when large tool outputs are going uncompressed |
 | `● headroom · ~2.4k tok · $0.007 · 3× \| $1.83 all-time` | 🟢 green | a compression just happened — tokens saved, **money saved**, how many times, and your all-time total |
-| `○ headroom idle · ~2.4k tok · $0.007 · 3× \| $1.83 all-time` | ⚪ grey | quiet for 60s — dims, but keeps the totals |
+| `○ headroom idle · ~2.4k tok · $0.007 · 3× · 2 missed \| $1.83 all-time` | ⚪ grey | quiet for 60s — dims, but keeps the totals; `· N missed` counts big results beyond what you've compressed |
 
 - The **token count is the running total for the whole session** (it adds up every compression).
 - It **resets to red** when you start a brand-new Claude session.
@@ -39,6 +39,10 @@ Every second, it looks at what your Claude session has actually done and updates
 The badge prices the tokens headroom saved at the **input rate of the model your session is running** (e.g. $5/MTok on Opus, $10/MTok on Fable). If the model isn't in the built-in price table, the badge just shows tokens — it never guesses a dollar figure. `all-time` is the sum across all your sessions on this machine (stored in `~/.claude/headroom-indicator/`).
 
 This is a deliberately **conservative floor**: compressed content would otherwise re-enter the context on every later API turn (mostly at the cheaper cache-read rate), so the true savings compound above the number shown.
+
+## What counts as a "missed opportunity"
+
+Any tool result of 4 KB or more that wasn't produced by headroom itself. Each compression you run forgives one big blob (compressing doesn't remove the original from the transcript, so a plain count would nag you about blobs you already handled). It's a size-only heuristic — a big code file you're editing may be a deliberate non-compression; treat the number as a nudge, not an accusation.
 
 ---
 

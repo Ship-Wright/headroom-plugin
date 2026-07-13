@@ -7,6 +7,8 @@ set -u
 
 TOOL="mcp__headroom__headroom_compress"
 STATE_DIR="${HEADROOM_STATE_DIR:-$HOME/.claude/headroom-indicator}"
+NUDGE_BYTES=4096            # tool results at least this large count as compression candidates
+HPREFIX="mcp__headroom__"   # results of headroom's own tools are never "missed"
 
 in=$(cat)
 
@@ -43,7 +45,7 @@ fmt_usd() {  # dollars -> "$0.03" (>= 1 cent) or "0.42¢"
   awk -v u="$1" 'BEGIN{ if (u>=0.01) printf "$%.2f", u; else printf "%.2f¢", u*100 }'
 }
 
-n=0; saved=0; last_ts=""
+n=0; saved=0; last_ts=""; missed=0
 
 compute() {  # fills n / saved / last_ts from the transcript at $tp
   n=$(jq -s --arg tool "$TOOL" \
@@ -59,7 +61,20 @@ compute() {  # fills n / saved / last_ts from the transcript at $tp
   last_ts=$(jq -r --arg tool "$TOOL" \
     'select(.message.content)|select(any(.message.content[]?;.type=="tool_use" and .name==$tool))|.timestamp' \
     "$tp" 2>/dev/null | tail -1)
+  big=$(jq -s --arg pfx "$HPREFIX" --argjson min "$NUDGE_BYTES" \
+    '([.[]|.message.content[]?|select(.type=="tool_use" and ((.name // "")|startswith($pfx)))|.id]) as $hids
+     | [.[]|.message.content[]?
+        | select(.type=="tool_result" and ((.tool_use_id) as $t|($hids|index($t))==null))
+        | (.content
+           | if type=="string" then length
+             elif type=="array" then ([.[]? | .text? // ""] | join("") | length)
+             else 0 end)
+        | select(. >= $min)]
+     | length' \
+    "$tp" 2>/dev/null)
+  big=${big:-0}
   n=${n:-0}; saved=${saved:-0}
+  if [ "$big" -gt "$n" ] 2>/dev/null; then missed=$((big - n)); else missed=0; fi
 }
 
 if [ -n "$tp" ] && [ -f "$tp" ]; then
@@ -68,16 +83,16 @@ if [ -n "$tp" ] && [ -f "$tp" ]; then
   [ -n "$sid" ] && cache="$STATE_DIR/session-$sid.cache"
   hit=0
   if [ -n "$cache" ] && [ -n "$size" ] && [ -f "$cache" ]; then
-    IFS='|' read -r csize cn csaved clast < "$cache" || true
-    if [ "${csize:-}" = "$size" ]; then
-      n=${cn:-0}; saved=${csaved:-0}; last_ts=${clast:-}
+    IFS='|' read -r csize cn csaved clast cmissed < "$cache" || true
+    if [ "${csize:-}" = "$size" ] && [ -n "${cmissed:-}" ]; then
+      n=${cn:-0}; saved=${csaved:-0}; last_ts=${clast:-}; missed=${cmissed:-0}
       hit=1
     fi
   fi
   if [ "$hit" -ne 1 ]; then
     compute
     if [ -n "$cache" ] && mkdir -p "$STATE_DIR" 2>/dev/null; then
-      printf '%s|%s|%s|%s\n' "${size:-0}" "$n" "$saved" "$last_ts" > "$cache" 2>/dev/null || true
+      printf '%s|%s|%s|%s|%s\n' "${size:-0}" "$n" "$saved" "$last_ts" "$missed" > "$cache" 2>/dev/null || true
       if [ "$saved" -gt 0 ] 2>/dev/null; then
         t_price=$(price_per_mtok "$model")
         t_usd=0
@@ -116,13 +131,24 @@ if [ "${totals_count:-0}" -gt 1 ] 2>/dev/null; then
   fi
 fi
 
+nudge=""
+if [ "$missed" -gt 0 ] 2>/dev/null; then
+  nudge=" · ${missed} missed"
+fi
+
 if [ "$n" -gt 0 ] 2>/dev/null; then
   tok=$(fmt_tok "$saved")
   if [ "$age" -le 60 ] 2>/dev/null; then
     printf '\033[32m● headroom · ~%s tok%s · %s×%s\033[0m' "$tok" "$money" "$n" "$lifetime"
   else
-    printf '\033[90m○ headroom idle · ~%s tok%s · %s×%s\033[0m' "$tok" "$money" "$n" "$lifetime"
+    printf '\033[90m○ headroom idle · ~%s tok%s · %s×%s%s\033[0m' "$tok" "$money" "$n" "$nudge" "$lifetime"
   fi
 else
-  printf '\033[31m○ headroom idle (not compressing yet)\033[0m'
+  if [ "$missed" -gt 0 ] 2>/dev/null; then
+    blobs="big blobs"
+    [ "$missed" -eq 1 ] 2>/dev/null && blobs="big blob"
+    printf '\033[31m○ headroom idle · %s %s uncompressed\033[0m' "$missed" "$blobs"
+  else
+    printf '\033[31m○ headroom idle (not compressing yet)\033[0m'
+  fi
 fi
