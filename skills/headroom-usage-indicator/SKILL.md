@@ -62,7 +62,7 @@ shutil.copyfile(hook_src, hook_dest)
 hook_dest.chmod(0o755)
 
 hcat_dest = pathlib.Path.home() / ".claude" / "hcat"
-shutil.copyfile(PLUGIN_ROOT / "scripts" / "hcat", hcat_dest)
+shutil.copyfile(PLUGIN_ROOT / "bin" / "hcat", hcat_dest)
 hcat_dest.chmod(0o755)
 gate_dest = pathlib.Path.home() / ".claude" / "hcat-gate.sh"
 shutil.copyfile(PLUGIN_ROOT / "scripts" / "hcat-gate.sh", gate_dest)

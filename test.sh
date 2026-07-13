@@ -311,7 +311,7 @@ out=$(badge "$TMP/t_asleep.jsonl" claude-opus-4-8 sess-m2)
 check "mascot: asleep when clear" "😴 dangi" "$out"
 
 # --- 22-25. hcat (compress-at-the-source shim)
-HCAT="$ROOT/scripts/hcat"
+HCAT="$ROOT/bin/hcat"
 HEADROOM_PY=""
 for cand in "${HCAT_PYTHON:-}" "$(command -v headroom 2>/dev/null | xargs -I{} dirname {} 2>/dev/null)/python" "$HOME/.headroom-venv/bin/python"; do
   [ -n "$cand" ] && [ -x "$cand" ] && HEADROOM_PY="$cand" && break
@@ -462,6 +462,59 @@ printf '%s\n%s\n' \
   > "$TMP/t_pass.jsonl"
 out=$(badge "$TMP/t_pass.jsonl" claude-opus-4-8 sess-hp)
 check "hcat badge: passthrough not counted" "not compressing yet" "$out"
+
+# --- 31. plugin-native hooks (hooks/hooks.json + bin/hcat)
+HOOKS_JSON="$ROOT/hooks/hooks.json"
+export HEADROOM_STATE_DIR="$TMP/state-plugnat"
+
+if jq -e . "$HOOKS_JSON" >/dev/null 2>&1; then
+  echo "ok - hooks.json: parses"; PASS=$((PASS+1))
+else
+  echo "FAIL - hooks.json: parses"; FAIL=$((FAIL+1))
+fi
+check "hooks.json: exactly the two event arrays" "PostToolUse,PreToolUse" \
+  "$(jq -r '.hooks | keys | sort | join(",")' "$HOOKS_JSON" 2>/dev/null)"
+check "hooks.json: single PreToolUse entry"  "1" "$(jq -r '.hooks.PreToolUse  | length' "$HOOKS_JSON" 2>/dev/null)"
+check "hooks.json: single PostToolUse entry" "1" "$(jq -r '.hooks.PostToolUse | length' "$HOOKS_JSON" 2>/dev/null)"
+check "hooks.json: PreToolUse matcher"  "Read|Bash" "$(jq -r '.hooks.PreToolUse[0].matcher'  "$HOOKS_JSON" 2>/dev/null)"
+check "hooks.json: PostToolUse matcher" "*"         "$(jq -r '.hooks.PostToolUse[0].matcher' "$HOOKS_JSON" 2>/dev/null)"
+
+gate_cmd=$(jq -r '.hooks.PreToolUse[0].hooks[0].command'  "$HOOKS_JSON" 2>/dev/null)
+dangi_cmd=$(jq -r '.hooks.PostToolUse[0].hooks[0].command' "$HOOKS_JSON" 2>/dev/null)
+check "hooks.json: gate command uses CLAUDE_PLUGIN_ROOT"  '${CLAUDE_PLUGIN_ROOT}' "$gate_cmd"
+check "hooks.json: gate command targets hcat-gate.sh"     "hcat-gate.sh"          "$gate_cmd"
+check "hooks.json: dangi command uses CLAUDE_PLUGIN_ROOT" '${CLAUDE_PLUGIN_ROOT}' "$dangi_cmd"
+check "hooks.json: dangi command targets dangi-hook.sh"   "dangi-hook.sh"         "$dangi_cmd"
+
+# hcat ships in bin/ (auto-added to Bash PATH while the plugin is enabled)
+if [ -x "$ROOT/bin/hcat" ]; then
+  echo "ok - bin/hcat: exists and is executable"; PASS=$((PASS+1))
+else
+  echo "FAIL - bin/hcat: exists and is executable"; FAIL=$((FAIL+1))
+fi
+
+# end-to-end through the EXACT command strings from hooks.json (not hardcoded
+# paths): substitute CLAUDE_PLUGIN_ROOT=$ROOT and run via sh -c.
+out=$(hook_input Bash 9000 plugnat-d1 | CLAUDE_PLUGIN_ROOT="$ROOT" sh -c "$dangi_cmd"); rc=$?
+check "plugin-native dangi: nudges via hooks.json command" "additionalContext" "$out"
+check "plugin-native dangi: exit 0" "0" "$rc"
+check "dangi nudge: plain hcat form (on PATH)" 'hcat \"<path>\"' "$out"
+check "dangi nudge: says it is on PATH" "on PATH" "$out"
+check_absent "dangi nudge: no ~/.claude" "~/.claude" "$out"
+check_absent "dangi nudge: no .claude/hcat" ".claude/hcat" "$out"
+
+if [ -n "$HEADROOM_PY" ]; then
+  out=$(gate_input "$TMP/hc_big.json" plugnat-g1 | CLAUDE_PLUGIN_ROOT="$ROOT" sh -c "$gate_cmd"); rc=$?
+  check "plugin-native gate: denies big json via hooks.json command" '"permissionDecision":"deny"' "$out"
+  check "plugin-native gate: exit 0" "0" "$rc"
+  check "gate deny: plain hcat form" 'Run `hcat \"' "$out"
+  check_absent "gate deny: no scripts/hcat path" "scripts/hcat" "$out"
+  check_absent "gate deny: no bin/hcat path" "bin/hcat" "$out"
+  check_absent "gate deny: no .claude/hcat" ".claude/hcat" "$out"
+  check_absent "gate deny: no ~/.claude" "~/.claude" "$out"
+else
+  echo "skip - plugin-native gate deny tests (headroom venv not found)"
+fi
 
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then

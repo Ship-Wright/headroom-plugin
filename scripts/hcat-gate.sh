@@ -43,7 +43,11 @@ case "$size" in (*[!0-9]*|"") exit 0 ;; esac
 [ "$size" -ge "$GATE_BYTES" ] || exit 0
 
 # hcat must actually be runnable, or we'd deny Reads and point at a dead end.
-HCAT="$(cd "$(dirname "$0")" && pwd)/hcat"
+# Plugin layout ships it in bin/ (on Bash PATH while the plugin is enabled);
+# a legacy ~/.claude install keeps it as a sibling of this script.
+here="$(cd "$(dirname "$0")" && pwd)"
+HCAT="$here/../bin/hcat"
+[ -x "$HCAT" ] || HCAT="$here/hcat"
 [ -x "$HCAT" ] || exit 0
 if [ -n "${HCAT_PYTHON:-}" ]; then
   [ -x "$HCAT_PYTHON" ] || exit 0
@@ -64,7 +68,7 @@ if mkdir -p "$STATE_DIR" 2>/dev/null; then
 fi
 
 kb=$(( size / 1024 ))
-jq -cn --arg fp "$fp" --arg hcat "$HCAT" --arg kb "$kb" \
+jq -cn --arg fp "$fp" --arg kb "$kb" \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",
-    permissionDecisionReason:("🤖 hcat-gate: \($fp) is a \($kb) KB structured file. Run `\($hcat) \"\($fp)\"` in Bash instead — it prints a compressed rendering (raw bytes never enter context; Read the path with offset/limit later for exact details). To read it raw anyway, just Read it again — this gate only fires once per file.")}}' 2>/dev/null
+    permissionDecisionReason:("🤖 hcat-gate: \($fp) is a \($kb) KB structured file. Run `hcat \"\($fp)\"` in Bash instead (hcat is on PATH while this plugin is enabled) — it prints a compressed rendering (raw bytes never enter context; Read the path with offset/limit later for exact details). To read it raw anyway, just Read it again — this gate only fires once per file.")}}' 2>/dev/null
 exit 0
