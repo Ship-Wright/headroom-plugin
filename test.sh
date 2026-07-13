@@ -105,6 +105,17 @@ out=$(badge "$TMP/t_life_b.jsonl" claude-opus-4-8 sess-life-b)
 check "lifetime: shown from 2nd session" "all-time"       "$out"
 check "lifetime: summed usd"             "0.50¢ all-time" "$out"
 
+# --- shellcheck (when available)
+if command -v shellcheck >/dev/null 2>&1; then
+  if shellcheck "$SCRIPT"; then
+    echo "ok - shellcheck"; PASS=$((PASS+1))
+  else
+    echo "FAIL - shellcheck"; FAIL=$((FAIL+1))
+  fi
+else
+  echo "skip - shellcheck not installed"
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
