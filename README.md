@@ -28,8 +28,8 @@ Every second, it looks at what your Claude session has actually done and updates
 | Badge | Colour | Meaning |
 |---|---|---|
 | `○ headroom idle (not compressing yet)` — or `○ headroom idle · 4 big blobs uncompressed` | 🔴 red | headroom hasn't compressed anything yet this session; the count appears when large tool outputs are going uncompressed |
-| `● headroom · ~2.4k tok · $0.007 · 3× \| $1.83 all-time` | 🟢 green | a compression just happened — tokens saved, **money saved**, how many times, and your all-time total |
-| `○ headroom idle · ~2.4k tok · $0.007 · 3× · 2 missed \| $1.83 all-time` | ⚪ grey | quiet for 60s — dims, but keeps the totals; `· N missed` counts big results beyond what you've compressed |
+| `● headroom · ~2.4k tok · $0.007 · 3× \| $1.83 all-time  😴 dangi` | 🟢 green | a compression just happened — tokens saved, **money saved**, how many times, and your all-time total |
+| `○ headroom idle · ~2.4k tok · $0.007 · 3× · 2 missed \| $1.83 all-time  🤖 dangi: 2!` | ⚪ grey | quiet for 60s — dims, but keeps the totals; `· N missed` counts big results beyond what you've compressed |
 
 - The **token count is the running total for the whole session** (it adds up every compression).
 - It **resets to red** when you start a brand-new Claude session.
@@ -43,6 +43,16 @@ This is a deliberately **conservative floor**: compressed content would otherwis
 ## What counts as a "missed opportunity"
 
 Any tool result of 4 KB or more that wasn't produced by headroom itself. Each compression you run forgives one big blob (compressing doesn't remove the original from the transcript, so a plain count would nag you about blobs you already handled). It's a size-only heuristic — a big code file you're editing may be a deliberate non-compression; treat the number as a nudge, not an accusation.
+
+## Meet Dangi 🤖
+
+Dangi is the plugin's real-time detector. The badge tells you what you missed; Dangi catches it **as it happens**:
+
+- the moment a tool spits out ≥ 4 KB that isn't compressed, Dangi whispers to Claude (an in-context nudge, max once a minute) so it can compress right away;
+- if it keeps happening, you get a macOS notification (max once per 5 minutes);
+- and he lives at the end of your status line: `😴 dangi` when all is well, `🤖 dangi: 3!` when compression chances are slipping by.
+
+Installed automatically as a Claude Code PostToolUse hook by the same installer. Set `DANGI_NO_NOTIFY=1` to silence the notifications.
 
 ---
 
@@ -80,7 +90,7 @@ Then ask Claude once more: *"set up the headroom usage indicator"* — this refr
 
 ## Uninstall
 
-Remove the `"statusLine"` block from `~/.claude/settings.json` (or ask Claude to "remove the headroom status line"), then `/plugin uninstall headroom-usage-indicator@headroom-tools`. Also remove `~/.claude/headroom-statusline.sh` and `~/.claude/headroom-indicator/`.
+Remove the `"statusLine"` block from `~/.claude/settings.json` (or ask Claude to "remove the headroom status line"), then `/plugin uninstall headroom-usage-indicator@headroom-tools`. Also remove `~/.claude/headroom-statusline.sh` and `~/.claude/headroom-indicator/`, plus the `hooks.PostToolUse` entry referencing `dangi-hook.sh` and `~/.claude/dangi-hook.sh`.
 
 ---
 
