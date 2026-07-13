@@ -718,8 +718,8 @@ S3b="$DOCD/s3b.json"
 jq -n '{statusLine:{type:"command",command:"bash ~/my-custom-line.sh"}}' > "$S3b"
 out=$(HCAT_PYTHON=/nonexistent/python DOCTOR_SETTINGS="$S3b" DOCTOR_CLAUDE_DIR="$CD2" \
       DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" --fix 2>&1)
-check "doctor: foreign statusLine left alone" "leaving it alone" "$out"
-check "doctor: foreign statusLine untouched by --fix" "my-custom-line.sh" \
+check "doctor: foreign statusLine merged, not clobbered" "merged" "$out"
+check "doctor: foreign statusLine preserved by --fix" "my-custom-line.sh" \
       "$(jq -r '.statusLine.command' "$S3b")"
 
 # 32f. --fix end-to-end: venv bootstrap (stubbed), legacy removal, statusLine, stale cleanup
@@ -810,8 +810,10 @@ check "mcp.json: command uses CLAUDE_PLUGIN_ROOT" '${CLAUDE_PLUGIN_ROOT}' "$mcp_
 check "mcp.json: command targets mcp-launcher.sh" "mcp-launcher.sh"       "$mcp_cmd"
 check "mcp.json: env update off" "off" "$(jq -r '.mcpServers.headroom.env.HEADROOM_UPDATE_CHECK // empty' "$MCP_JSON" 2>/dev/null)"
 check "mcp.json: env hf offline" "1"   "$(jq -r '.mcpServers.headroom.env.HF_HUB_OFFLINE // empty' "$MCP_JSON" 2>/dev/null)"
+# the command string is shell-interpreted (quoted like hooks.json), so run it
+# the same way the hooks.json commands are exercised: via sh -c
 mcp_resolved=${mcp_cmd/'${CLAUDE_PLUGIN_ROOT}'/"$ROOT"}
-out=$(HCAT_PYTHON="$FENG/python" "$mcp_resolved" 2>&1)
+out=$(HCAT_PYTHON="$FENG/python" sh -c "$mcp_resolved" 2>&1)
 check "mcp.json: end-to-end launch through the bundled command" "launched: mcp serve" "$out"
 
 # 32j. /doctor skill
@@ -944,6 +946,233 @@ if locale -a 2>/dev/null | grep -qix 'de_DE.UTF-8'; then
 else
   echo "skip - de_DE.UTF-8 locale tests (locale not installed)"
 fi
+
+# --- 35. review fixes: doctor + resolution (v2.5 F2)
+REVD="$TMP/rev"; mkdir -p "$REVD"
+NOVENV="$REVD/novenv"   # never created — engine must resolve without it
+
+# F1: pip --user / pipx layout — a `headroom` console script with NO sibling
+# python. Its shebang names a stub interpreter that passes `import headroom`
+# (exit 0 on any argv, e.g. -c) and echoes its invocation. The stub must be a
+# real binary — kernels reject a shebang interpreter that is itself a script —
+# so symlink /bin/echo (argv comes out on stdout, exit 0 always; a copy would
+# be SIGKILLed by macOS signature checks).
+SPY="$REVD/interp"; mkdir -p "$SPY"
+ln -s /bin/echo "$SPY/python3.14"
+CLI="$REVD/clibin"; mkdir -p "$CLI"
+printf '#!%s\n# console script only — no sibling python in this dir\n' "$SPY/python3.14" > "$CLI/headroom"
+chmod +x "$CLI/headroom"
+FAKEHOME="$REVD/home"; mkdir -p "$FAKEHOME"
+
+# the launcher only needs the CLI: `headroom` on PATH is used directly
+out=$(env -u HCAT_PYTHON PATH="$CLI:/usr/bin:/bin" DOCTOR_VENV_DIR="$NOVENV" bash "$LAUNCHER" 2>&1); rc=$?
+check "f1 launcher: console-script-only layout execs" "mcp serve" "$out"
+check "f1 launcher: exit 0" "0" "$rc"
+
+# hcat needs an importing python: the console script's shebang interpreter
+# (the echo-stub prints its argv, proving which interpreter hcat exec'd)
+printf '{"k":1}' > "$REVD/tiny.json"
+out=$(env -u HCAT_PYTHON HOME="$FAKEHOME" PATH="$CLI:/usr/bin:/bin" bash "$HCAT" "$REVD/tiny.json" 2>&1); rc=$?
+check "f1 hcat: shebang interpreter resolved" "$REVD/tiny.json" "$out"
+check "f1 hcat: exit 0 (not 3)" "0" "$rc"
+
+# ...including the `#!/usr/bin/env pythonX` shebang form, resolved via PATH
+CLI2="$REVD/clibin2"; mkdir -p "$CLI2"
+ln -s "$SPY/python3.14" "$CLI2/revpy"
+printf '#!/usr/bin/env revpy\n' > "$CLI2/headroom"
+chmod +x "$CLI2/headroom"
+out=$(env -u HCAT_PYTHON HOME="$FAKEHOME" PATH="$CLI2:/usr/bin:/bin" bash "$HCAT" "$REVD/tiny.json" 2>&1)
+check "f1 hcat: env-form shebang resolved" "$REVD/tiny.json" "$out"
+
+# the doctor's engine check accepts the shebang interpreter too
+CD35="$REVD/cd35"; mkdir -p "$CD35"
+S35="$REVD/s35.json"; doc_settings_wired "$CD35" > "$S35"
+out=$(env -u HCAT_PYTHON PATH="$CLI:$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$S35" \
+      DOCTOR_CLAUDE_DIR="$CD35" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check "f1 doctor: engine via console-script shebang" "engine python: $SPY/python3.14" "$out"
+
+# F2: a dotfile-manager symlinked settings.json must survive --fix as a symlink,
+# with the fix landing in the target. (Also carries stale copies for the F5
+# project-level caveat note.)
+SYMD="$REVD/sym"; mkdir -p "$SYMD/cd"
+touch "$SYMD/cd/dangi-hook.sh" "$SYMD/cd/hcat-gate.sh"
+doc_settings_legacy "$SYMD/cd" > "$SYMD/target.json"
+ln -s target.json "$SYMD/settings.json"
+out=$(env -u HCAT_PYTHON PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$SYMD/settings.json" \
+      DOCTOR_CLAUDE_DIR="$SYMD/cd" DOCTOR_VENV_DIR="$DOCD/venv-boot" bash "$DOCTOR" --fix 2>&1)
+if [ -L "$SYMD/settings.json" ]; then
+  echo "ok - f2: settings.json is still a symlink after --fix"; PASS=$((PASS+1))
+else
+  echo "FAIL - f2: settings.json is still a symlink after --fix"; FAIL=$((FAIL+1))
+fi
+check "f2: legacy hooks removed through the link" "0" \
+  "$(jq '[.hooks // {} | to_entries[] | .value[]?.hooks[]? | select((.command // "") | test("dangi-hook|hcat-gate"))] | length' "$SYMD/target.json")"
+check "f2: statusLine fix landed in the target" "headroom-statusline.sh" \
+  "$(jq -r '.statusLine.command // empty' "$SYMD/target.json")"
+check "f7b: doctor-written statusLine has refreshInterval 1" "1" \
+  "$(jq -r '.statusLine.refreshInterval // empty' "$SYMD/target.json")"
+check "f5: stale-copy deletion notes project-level settings caveat" "project-level" "$out"
+
+# F3: broken exported HCAT_PYTHON — --fix must FAIL and refuse to bootstrap
+BADIMP="$REVD/badimp"; mkdir -p "$BADIMP"
+printf '#!/bin/sh\nexit 1\n' > "$BADIMP/python"; chmod +x "$BADIMP/python"
+F3="$REVD/f3"; mkdir -p "$F3/cd"
+doc_settings_wired "$F3/cd" > "$F3/settings.json"
+pyc0=$(wc -l < "$STUB/python3.calls" | tr -d ' ')
+out=$(HCAT_PYTHON="$BADIMP/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F3/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F3/cd" DOCTOR_VENV_DIR="$REVD/f3venv" bash "$DOCTOR" --fix 2>&1); rc=$?
+check "f3: broken HCAT_PYTHON reported as FAIL" "HCAT_PYTHON is set but broken" "$out"
+check_absent "f3: no bootstrap claim" "engine bootstrapped" "$out"
+if [ "$rc" -ne 0 ]; then
+  echo "ok - f3: --fix exits nonzero"; PASS=$((PASS+1))
+else
+  echo "FAIL - f3: --fix exits nonzero (got rc=0)"; FAIL=$((FAIL+1))
+fi
+if [ ! -e "$REVD/f3venv" ]; then
+  echo "ok - f3: no venv created"; PASS=$((PASS+1))
+else
+  echo "FAIL - f3: no venv created ($REVD/f3venv exists)"; FAIL=$((FAIL+1))
+fi
+cp "$F3/settings.json" "$REVD/f3.settings.run1"
+out2=$(HCAT_PYTHON="$BADIMP/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F3/settings.json" \
+       DOCTOR_CLAUDE_DIR="$F3/cd" DOCTOR_VENV_DIR="$REVD/f3venv" bash "$DOCTOR" --fix 2>&1)
+check "f3: second --fix FAILs identically" "HCAT_PYTHON is set but broken" "$out2"
+if [ ! -e "$REVD/f3venv" ] && cmp -s "$F3/settings.json" "$REVD/f3.settings.run1"; then
+  echo "ok - f3: state byte-identical after two --fix runs"; PASS=$((PASS+1))
+else
+  echo "FAIL - f3: state byte-identical after two --fix runs"; FAIL=$((FAIL+1))
+fi
+check "f3: python3 never invoked" "$pyc0" "$(wc -l < "$STUB/python3.calls" | tr -d ' ')"
+
+# F4: corrupt settings.json — FAIL, and all settings-mutating fixes refuse
+for shape in trailing twodoc; do
+  C4="$REVD/cor-$shape"; mkdir -p "$C4/cd"
+  if [ "$shape" = trailing ]; then
+    printf '{"statusLine":{"type":"command","command":"x"}} trailing-garbage\n' > "$C4/settings.json"
+  else
+    printf '{}\n{"hooks":{"PostToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"bash ~/.claude/dangi-hook.sh"}]}]}}\n' > "$C4/settings.json"
+  fi
+  cp "$C4/settings.json" "$C4/settings.orig"
+  out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$C4/settings.json" \
+        DOCTOR_CLAUDE_DIR="$C4/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix 2>&1); rc=$?
+  check "f4 ($shape): parse failure is a FAIL" "not a single valid JSON document" "$out"
+  check_absent "f4 ($shape): no false legacy ok" "no legacy hook registrations" "$out"
+  check_absent "f4 ($shape): nothing reported fixed" "fixed" "$out"
+  if cmp -s "$C4/settings.json" "$C4/settings.orig"; then
+    echo "ok - f4 ($shape): settings.json untouched by --fix"; PASS=$((PASS+1))
+  else
+    echo "FAIL - f4 ($shape): settings.json untouched by --fix"; FAIL=$((FAIL+1))
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo "ok - f4 ($shape): exit nonzero"; PASS=$((PASS+1))
+  else
+    echo "FAIL - f4 ($shape): exit nonzero (got rc=0)"; FAIL=$((FAIL+1))
+  fi
+done
+
+# F5: legacy hooks only in settings.local.json → stale-copy deletion refuses
+F5="$REVD/f5"; mkdir -p "$F5/cd"
+touch "$F5/cd/dangi-hook.sh" "$F5/cd/hcat"
+doc_settings_wired "$F5/cd" > "$F5/settings.json"
+doc_settings_legacy "$F5/cd" > "$F5/settings.local.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F5/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F5/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix 2>&1)
+check "f5: settings.local.json legacy hooks reported" "settings.local.json" "$out"
+check "f5: stale-copy fix refuses" "stale copies kept" "$out"
+if [ -e "$F5/cd/dangi-hook.sh" ] && [ -e "$F5/cd/hcat" ]; then
+  echo "ok - f5: scripts referenced by settings.local.json survive"; PASS=$((PASS+1))
+else
+  echo "FAIL - f5: scripts referenced by settings.local.json survive"; FAIL=$((FAIL+1))
+fi
+
+# F6: Debian venv dead-end — half-created venv removed, actionable message
+DEB="$REVD/deb"; mkdir -p "$DEB"
+ln -sf "$(command -v jq)" "$DEB/jq"
+cat > "$DEB/python3" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+  mkdir -p "$3/bin"
+  ln -s /bin/sh "$3/bin/python"
+  echo "Error: ensurepip is not available (python3-venv missing)" >&2
+  exit 1
+fi
+exit 0
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$DEB/apt-get"
+chmod +x "$DEB/python3" "$DEB/apt-get"
+F6="$REVD/f6"; mkdir -p "$F6/cd"
+doc_settings_wired "$F6/cd" > "$F6/settings.json"
+out=$(env -u HCAT_PYTHON PATH="$DEB:/usr/bin:/bin" DOCTOR_SETTINGS="$F6/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F6/cd" DOCTOR_VENV_DIR="$REVD/f6venv" bash "$DOCTOR" --fix 2>&1)
+check "f6: failure message suggests python3-venv" "python3-venv" "$out"
+check "f6: bootstrap failure is a FAIL" "FAIL" "$out"
+if [ ! -e "$REVD/f6venv" ]; then
+  echo "ok - f6: half-created venv removed"; PASS=$((PASS+1))
+else
+  echo "FAIL - f6: half-created venv removed ($REVD/f6venv remains)"; FAIL=$((FAIL+1))
+fi
+# ...but a venv dir the doctor did NOT create must never be deleted
+mkdir -p "$REVD/f6bvenv"; touch "$REVD/f6bvenv/keep-me"
+env -u HCAT_PYTHON PATH="$DEB:/usr/bin:/bin" DOCTOR_SETTINGS="$F6/settings.json" \
+    DOCTOR_CLAUDE_DIR="$F6/cd" DOCTOR_VENV_DIR="$REVD/f6bvenv" bash "$DOCTOR" --fix >/dev/null 2>&1
+if [ -e "$REVD/f6bvenv/keep-me" ]; then
+  echo "ok - f6: pre-existing venv dir preserved on failure"; PASS=$((PASS+1))
+else
+  echo "FAIL - f6: pre-existing venv dir preserved on failure"; FAIL=$((FAIL+1))
+fi
+
+# F7a: merge-aware statusLine fix — custom command preserved and chained
+F7R="$REVD/f7r"; mkdir -p "$F7R/cd"
+jq -n '{statusLine:{type:"command",command:"bash ~/my-line.sh"}}' > "$F7R/settings.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7R/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7R/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check "f7a: read-only reports custom statusLine as fixable" "fixable - statusLine" "$out"
+F7="$REVD/f7"; mkdir -p "$F7/cd"
+jq -n '{statusLine:{type:"command",command:"bash ~/my-line.sh"}}' > "$F7/settings.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix 2>&1)
+check "f7a: fix reports a merge" "merged" "$out"
+newcmd=$(jq -r '.statusLine.command' "$F7/settings.json")
+check "f7a: custom command preserved in the chain" "my-line.sh" "$newcmd"
+check "f7a: headroom badge appended" "headroom-statusline.sh" "$newcmd"
+check "f7a: chained with the installer template" 'left=$(printf' "$newcmd"
+check "f7a: original backed up" "bash ~/my-line.sh" \
+      "$(jq -r '._headroomStatusLineBackup.command // empty' "$F7/settings.json")"
+check "f7a: merged entry has refreshInterval 1" "1" \
+      "$(jq -r '.statusLine.refreshInterval // empty' "$F7/settings.json")"
+cp "$F7/settings.json" "$REVD/f7.settings.run1"
+out2=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7/settings.json" \
+       DOCTOR_CLAUDE_DIR="$F7/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix 2>&1)
+if cmp -s "$F7/settings.json" "$REVD/f7.settings.run1"; then
+  echo "ok - f7a: second --fix run is idempotent"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7a: second --fix run is idempotent"; FAIL=$((FAIL+1))
+fi
+check_absent "f7a: nothing fixable after the merge" "fixable" "$out2"
+
+# F7c: stale ~/.claude statusline copy is detected and refreshed
+F7C="$REVD/f7c"; mkdir -p "$F7C/cd"
+doc_settings_wired "$F7C/cd" > "$F7C/settings.json"
+printf '#!/bin/sh\n# stale old copy\n' > "$F7C/cd/headroom-statusline.sh"
+chmod +x "$F7C/cd/headroom-statusline.sh"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7C/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7C/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check "f7c: stale statusline copy is fixable" "statusline copy" "$out"
+check "f7c: reported as fixable" "fixable" "$out"
+# F7d: the doctor validates the bundled .mcp.json
+check "f7d: .mcp.json checked and healthy" ".mcp.json registers the headroom MCP" "$out"
+HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7C/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7C/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+if cmp -s "$F7C/cd/headroom-statusline.sh" "$ROOT/scripts/statusline.sh" && [ -x "$F7C/cd/headroom-statusline.sh" ]; then
+  echo "ok - f7c: --fix refreshes the copy from the plugin"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7c: --fix refreshes the copy from the plugin"; FAIL=$((FAIL+1))
+fi
+
+# F8: .mcp.json quotes CLAUDE_PLUGIN_ROOT exactly like hooks.json does
+check "f8: .mcp.json command quoted like hooks.json" \
+      '"${CLAUDE_PLUGIN_ROOT}"/scripts/mcp-launcher.sh' \
+      "$(jq -r '.mcpServers.headroom.command' "$MCP_JSON")"
 
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then

@@ -8,12 +8,17 @@ description: Use when the headroom setup needs a health check or repair — the 
 ## Overview
 
 `scripts/doctor.sh` validates the whole headroom setup end-to-end: jq, the
-headroom engine python (`$HCAT_PYTHON` → sibling of `headroom` on PATH →
-`~/.headroom-venv`), a real `bin/hcat` smoke compression of a generated ~20 KB
-JSON, the plugin-native `hooks/hooks.json`, legacy pre-plugin hook entries
-still registered in `~/.claude/settings.json` (they double-fire alongside the
-plugin-native hooks), the statusLine wiring, and stale pre-plugin script
-copies in `~/.claude`.
+headroom engine python (`$HCAT_PYTHON` → sibling of `headroom` on PATH → the
+`headroom` console script's shebang interpreter, which covers pip --user and
+pipx layouts → `~/.headroom-venv`), a real `bin/hcat` smoke compression of a
+generated ~20 KB JSON, the plugin-native `hooks/hooks.json`, the bundled
+`.mcp.json` (parses and its launcher is executable), that
+`~/.claude/settings.json` is a single valid JSON document, legacy pre-plugin
+hook entries still registered in `~/.claude/settings.json` or
+`~/.claude/settings.local.json` (they double-fire alongside the plugin-native
+hooks), the statusLine wiring, that the `~/.claude/headroom-statusline.sh`
+copy matches the plugin's script, and stale pre-plugin script copies in
+`~/.claude`.
 
 Invoked as `/headroom-usage-indicator:doctor`.
 
@@ -32,7 +37,10 @@ Each line is aligned `<status> - <what>`:
 
 - `ok` — healthy, nothing to do.
 - `FAIL` — genuinely broken; the doctor exits nonzero. Explain what broke and
-  what the line suggests (e.g. install jq, reinstall the engine).
+  what the line suggests (e.g. install jq, reinstall the engine). A corrupt
+  settings.json, legacy hooks in settings.local.json, or a broken exported
+  `HCAT_PYTHON` are reported here — the doctor refuses to edit settings or
+  bootstrap around them.
 - `fixable` — the doctor can repair this itself with `--fix`:
   - engine missing → bootstrap `python3 -m venv ~/.headroom-venv` +
     `pip install headroom`
@@ -40,11 +48,16 @@ Each line is aligned `<status> - <what>`:
     `settings.json.bak.*` written first)
   - statusLine unwired → statusline script copied to
     `~/.claude/headroom-statusline.sh` and settings.json pointed at it
-    (backup first)
+    (backup first); merge-aware: an existing non-headroom statusLine command
+    is preserved under `_headroomStatusLineBackup` and chained ahead of the
+    badge, never clobbered
+  - stale statusline copy → refreshed from the plugin's `scripts/statusline.sh`
   - stale `~/.claude` copies → deleted, but only once plugin-native hooks are
-    confirmed and no legacy entries remain
-- `skip` — could not be checked (e.g. hcat smoke without an engine) or
-  deliberately left alone (a non-headroom statusLine is never touched).
+    confirmed and no legacy entries remain in settings.json or
+    settings.local.json (project-level `.claude/settings.json` files are not
+    scanned — the doctor notes this caveat when it deletes)
+- `skip` — could not be checked (e.g. hcat smoke without an engine, or
+  settings.json unparseable).
 
 Summarize for the user in one or two sentences: what is healthy, what is
 broken, what the doctor could fix.
