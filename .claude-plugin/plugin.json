@@ -1,7 +1,7 @@
 {
   "name": "headroom-usage-indicator",
   "description": "Status-line indicator showing whether the headroom MCP context-compression is being used this session — idle until headroom_compress runs, then active with the tokens AND money it saved (priced against the session model), decaying back to idle after a quiet period. Tracks an all-time money-saved total across sessions. Idle badges also nudge with a count of large tool results that went uncompressed. Includes Dangi, a real-time PostToolUse detector that nudges Claude (and optionally you) the moment a big uncompressed output lands.",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "author": {
     "name": "Abhishek"
   },
