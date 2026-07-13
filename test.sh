@@ -95,6 +95,16 @@ out=$(badge "$TMP/t_grow.jsonl" claude-opus-4-8 sess-grow)
 check "growth: recount"      "2×"       "$out"
 check "growth: retotal"      "~750 tok" "$out"
 
+# --- 7. lifetime totals across sessions
+rm -rf "$HEADROOM_STATE_DIR"   # reset state accumulated by earlier tests
+compress_event a1 500 > "$TMP/t_life_a.jsonl"
+compress_event b1 500 > "$TMP/t_life_b.jsonl"
+out=$(badge "$TMP/t_life_a.jsonl" claude-opus-4-8 sess-life-a)
+check_absent "lifetime: hidden on first-ever session" "all-time" "$out"
+out=$(badge "$TMP/t_life_b.jsonl" claude-opus-4-8 sess-life-b)
+check "lifetime: shown from 2nd session" "all-time"       "$out"
+check "lifetime: summed usd"             "0.50¢ all-time" "$out"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

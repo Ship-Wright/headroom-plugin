@@ -78,6 +78,10 @@ if [ -n "$tp" ] && [ -f "$tp" ]; then
     compute
     if [ -n "$cache" ] && mkdir -p "$STATE_DIR" 2>/dev/null; then
       printf '%s|%s|%s|%s\n' "${size:-0}" "$n" "$saved" "$last_ts" > "$cache" 2>/dev/null || true
+      t_price=$(price_per_mtok "$model")
+      t_usd=0
+      [ -n "$t_price" ] && t_usd=$(usd_of "$saved" "$t_price")
+      printf '%s %s\n' "$saved" "$t_usd" > "$STATE_DIR/session-$sid.totals" 2>/dev/null || true
     fi
   fi
 fi
@@ -96,12 +100,21 @@ if [ -n "$price" ] && [ "$saved" -gt 0 ] 2>/dev/null; then
   money=" · $(fmt_usd "$(usd_of "$saved" "$price")")"
 fi
 
+lifetime=""
+totals_count=$(find "$STATE_DIR" -name 'session-*.totals' 2>/dev/null | wc -l | tr -d ' ')
+if [ "${totals_count:-0}" -gt 1 ] 2>/dev/null; then
+  lt_usd=$(cat "$STATE_DIR"/session-*.totals 2>/dev/null | awk '{u+=$2} END{printf "%.6f", u+0}')
+  if awk -v u="$lt_usd" 'BEGIN{exit !(u>0)}'; then
+    lifetime=" | $(fmt_usd "$lt_usd") all-time"
+  fi
+fi
+
 if [ "$n" -gt 0 ] 2>/dev/null; then
   tok=$(fmt_tok "$saved")
   if [ "$age" -le 60 ] 2>/dev/null; then
-    printf '\033[32m● headroom · ~%s tok%s · %s×\033[0m' "$tok" "$money" "$n"
+    printf '\033[32m● headroom · ~%s tok%s · %s×%s\033[0m' "$tok" "$money" "$n" "$lifetime"
   else
-    printf '\033[90m○ headroom idle · ~%s tok%s · %s×\033[0m' "$tok" "$money" "$n"
+    printf '\033[90m○ headroom idle · ~%s tok%s · %s×%s\033[0m' "$tok" "$money" "$n" "$lifetime"
   fi
 else
   printf '\033[31m○ headroom idle (not compressing yet)\033[0m'
