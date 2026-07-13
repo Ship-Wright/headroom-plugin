@@ -226,6 +226,13 @@ check "dangi: cooldown is per-session" "additionalContext" "$out"
 # 19. non-events stay silent (and exit 0)
 out=$(hook_input Bash 4095 dangi-s3 | bash "$DANGI")
 check_absent "dangi: under threshold" "additionalContext" "$out"
+out=$(hook_input Edit 9000 dangi-s6 | bash "$DANGI")
+check_absent "dangi: Edit excluded (echoes code being edited)" "additionalContext" "$out"
+out=$(hook_input Write 9000 dangi-s6 | bash "$DANGI")
+check_absent "dangi: Write excluded" "additionalContext" "$out"
+out=$(hook_input Bash 9000 dangi-s7 | bash "$DANGI")
+check "dangi: nudge points to hcat" "hcat" "$out"
+check "dangi: nudge offers subagent fallback" "subagent" "$out"
 out=$(hook_input mcp__headroom__headroom_compress 9000 dangi-s4 | bash "$DANGI")
 check_absent "dangi: headroom tools excluded" "additionalContext" "$out"
 out=$(printf 'not json at all' | bash "$DANGI"); rc=$?
@@ -254,9 +261,95 @@ compress_event m2 500 > "$TMP/t_asleep.jsonl"
 out=$(badge "$TMP/t_asleep.jsonl" claude-opus-4-8 sess-m2)
 check "mascot: asleep when clear" "😴 dangi" "$out"
 
+# --- 22-25. hcat (compress-at-the-source shim)
+HCAT="$ROOT/scripts/hcat"
+HEADROOM_PY=""
+for cand in "${HCAT_PYTHON:-}" "$(command -v headroom 2>/dev/null | xargs -I{} dirname {} 2>/dev/null)/python" "$HOME/.headroom-venv/bin/python"; do
+  [ -n "$cand" ] && [ -x "$cand" ] && HEADROOM_PY="$cand" && break
+done
+
+# 22. arg validation runs before python resolution — testable everywhere
+out=$(bash "$HCAT" 2>&1); rc=$?
+check "hcat: no args → usage" "usage" "$out"
+check "hcat: no args → exit 2" "2" "$rc"
+out=$(bash "$HCAT" "$TMP/does-not-exist.json" 2>&1); rc=$?
+check "hcat: missing file → exit 2" "2" "$rc"
+
+# 23. unusable python → distinct exit 3, nothing on stdout
+printf '{"k":1}' > "$TMP/hc_small.json"
+out=$(HCAT_PYTHON=/nonexistent/python bash "$HCAT" "$TMP/hc_small.json" 2>/dev/null); rc=$?
+check "hcat: no headroom → exit 3" "3" "$rc"
+check_absent "hcat: no headroom → stdout empty" "{" "$out"
+
+if [ -n "$HEADROOM_PY" ]; then
+  # 24. real compression: big structured JSON shrinks, header cites source path
+  "$HEADROOM_PY" - "$TMP/hc_big.json" <<'PYEOF'
+import json, sys
+rows = [{"id": i, "user": f"user_{i%50}", "event": "click", "ts": 1700000000+i, "ok": True} for i in range(500)]
+open(sys.argv[1], "w").write(json.dumps(rows, indent=2))
+PYEOF
+  out=$(HEADROOM_WORKSPACE_DIR="$TMP/hc_ws" bash "$HCAT" "$TMP/hc_big.json"); rc=$?
+  check "hcat: exit 0 on success" "0" "$rc"
+  check "hcat: header cites source path" "$TMP/hc_big.json" "$out"
+  check "hcat: header shows savings" "% saved" "$out"
+  raw_bytes=$(wc -c < "$TMP/hc_big.json")
+  out_bytes=$(printf '%s' "$out" | wc -c)
+  if [ "$out_bytes" -lt $(( raw_bytes / 2 )) ]; then
+    echo "ok - hcat: output < half of raw"; PASS=$((PASS+1))
+  else
+    echo "FAIL - hcat: output < half of raw (raw=$raw_bytes out=$out_bytes)"; FAIL=$((FAIL+1))
+  fi
+  check "hcat: stats event written" '"strategy":"hcat"' "$(cat "$TMP"/hc_ws/*.jsonl 2>/dev/null)"
+
+  # 25. incompressible content → raw passthrough, no schema noise
+  printf 'short prose line\n' > "$TMP/hc_prose.txt"
+  out=$(HEADROOM_WORKSPACE_DIR="$TMP/hc_ws" bash "$HCAT" "$TMP/hc_prose.txt")
+  check "hcat: passthrough keeps raw" "short prose line" "$out"
+else
+  echo "skip - hcat compression tests (headroom venv not found)"
+fi
+
+# --- 26-28. hcat-gate (PreToolUse Read gate)
+GATE="$ROOT/scripts/hcat-gate.sh"
+export HEADROOM_STATE_DIR="$TMP/state-gate"
+
+gate_input() {  # gate_input <file-path> <session-id> — synthetic PreToolUse stdin
+  jq -n --arg fp "$1" --arg sid "$2" \
+    '{hook_event_name:"PreToolUse", tool_name:"Read", session_id:$sid, tool_input:{file_path:$fp}}'
+}
+
+# 26. small / non-structured / garbage → silent allow, exit 0
+out=$(gate_input "$TMP/hc_small.json" gate-s1 | bash "$GATE"); rc=$?
+check_absent "gate: small file allowed" "deny" "$out"
+check "gate: small file exit 0" "0" "$rc"
+head -c 20000 /dev/zero | tr '\0' 'x' > "$TMP/hc_big.dart"
+out=$(gate_input "$TMP/hc_big.dart" gate-s1 | bash "$GATE")
+check_absent "gate: non-structured ext allowed" "deny" "$out"
+out=$(printf 'not json' | bash "$GATE"); rc=$?
+check_absent "gate: garbage stdin silent" "deny" "$out"
+check "gate: garbage stdin exit 0" "0" "$rc"
+
+if [ -n "$HEADROOM_PY" ]; then
+  # 27. big structured file → deny once with hcat guidance...
+  out=$(gate_input "$TMP/hc_big.json" gate-s2 | bash "$GATE")
+  check "gate: big json denied" '"permissionDecision":"deny"' "$out"
+  check "gate: reason names hcat" "hcat" "$out"
+  # 28. ...second attempt on the same file passes (escape hatch)
+  out=$(gate_input "$TMP/hc_big.json" gate-s2 | bash "$GATE")
+  check_absent "gate: retry same file allowed" "deny" "$out"
+  # other sessions unaffected
+  out=$(gate_input "$TMP/hc_big.json" gate-s3 | bash "$GATE")
+  check "gate: deny is per-session" '"permissionDecision":"deny"' "$out"
+  # kill switch
+  out=$(gate_input "$TMP/hc_big.json" gate-s4 | HCAT_GATE_OFF=1 bash "$GATE")
+  check_absent "gate: HCAT_GATE_OFF disables" "deny" "$out"
+else
+  echo "skip - gate deny tests (headroom venv not found)"
+fi
+
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck "$SCRIPT" "$DANGI"; then
+  if shellcheck "$SCRIPT" "$DANGI" "$ROOT/scripts/hcat-gate.sh"; then
     echo "ok - shellcheck"; PASS=$((PASS+1))
   else
     echo "FAIL - shellcheck"; FAIL=$((FAIL+1))

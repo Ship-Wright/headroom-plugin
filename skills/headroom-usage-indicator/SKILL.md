@@ -14,6 +14,8 @@ The headroom MCP compresses large, structured tool outputs to save context — b
 - ⚪ `○ headroom idle · ~2.4k tok · $0.007 · 3× · 2 missed | $1.83 all-time` — after 60s of quiet (keeps the totals; ` · N missed` appears when more big results arrived than you've compressed)
 - 🤖 `😴 dangi` / `🤖 dangi: 3!` — the mascot at the right end of every badge: asleep when nothing is being missed, awake with the count when big results are going uncompressed. Its hook twin nudges Claude the moment such an output lands.
 
+v2.3 adds the **prevention layer**: `hcat` compresses structured files *at the source* (raw bytes never enter context — the only path that saves tokens on the first pass), and a PreToolUse **gate** redirects Claude from raw Reads of big structured files to `hcat`, once per file per session.
+
 **Core principle:** detect real usage from the session transcript, not from intent. It counts `tool_use` calls to `mcp__headroom__headroom_compress` and sums the `tokens_saved` those calls actually reported — so it can't lie. The dollar figure prices those tokens at the **session model's input rate** (a conservative floor — see below).
 
 ## Prerequisites
@@ -32,7 +34,9 @@ All logic lives in one shipped script, `scripts/statusline.sh` (in this plugin, 
 5. **Cache** — per-session results cached in `~/.claude/headroom-indicator/session-<id>.cache` keyed on transcript byte size; unchanged size skips the jq parse (a `stat` call instead of an O(transcript) parse every second). Cache format: `size|n|saved|last_ts|missed`.
 6. **Lifetime** — a session writes `session-<id>.totals` (`tokens usd`) only once it has actually saved tokens (sessions that never compress anything don't leave a file behind); if the session's model changes mid-session, the recorded usd is only ever raised, never lowered, by re-pricing at the new rate — a switch to a cheaper or unpriced model can't shrink what's already been credited. The badge sums existing totals files into `| $X all-time` once more than one session exists.
 7. **Decay** — timestamp of the last compress; within 60s → bright green, else dim (totals retained).
-8. **Dangi (real-time)** — a PostToolUse hook (`~/.claude/dangi-hook.sh`) inspects every tool result as it lands; when one is ≥ 4 KB and not from a headroom tool, it injects a one-line `additionalContext` nudge for Claude (at most once per 60 s per session) and shows a macOS notification (at most once per 300 s; skipped when `osascript` is absent or `DANGI_NO_NOTIFY` is set). The hook always exits 0 and prints nothing except the single JSON nudge. Note: Claude Code truncates very large outputs before hooks see them (per docs, ~10,000 chars with file-reference replacement), so a huge blob may evade the real-time ping — the transcript-based `missed` counter still catches it.
+8. **Dangi (real-time)** — a PostToolUse hook (`~/.claude/dangi-hook.sh`) inspects every tool result as it lands; when one is ≥ 4 KB, not from a headroom tool, and not from an edit tool (`Edit`/`Write`/`MultiEdit`/`NotebookEdit` echo the code being changed — never compression targets), it injects a one-line `additionalContext` nudge for Claude (at most once per 60 s per session) pointing at `hcat` for file-backed content and `headroom_compress`/disposable-subagent for the rest, and shows a macOS notification (at most once per 300 s; skipped when `osascript` is absent or `DANGI_NO_NOTIFY` is set). The hook always exits 0 and prints nothing except the single JSON nudge. Note: Claude Code truncates very large outputs before hooks see them (per docs, ~10,000 chars with file-reference replacement), so a huge blob may evade the real-time ping — the transcript-based `missed` counter still catches it.
+9. **hcat (compress at the source)** — `~/.claude/hcat <file>` compresses a structured file through headroom's local pipeline *before* it enters context: prints a header (`path · lines · KB · ~tokens before → after · % saved`) plus the compressed rendering; the original on disk is the source of truth (Read it with offset/limit for exact details — no retrieval store involved, so hashes and TTLs don't apply). Falls back to raw passthrough when compression would save < 5 %. Appends a `strategy:"hcat"` event to headroom's shared session-stats file so `headroom_stats` counts the savings (they appear under `sub_agents`/`combined` — the statusline badge does not yet include them; known limitation, it undercounts, never overcounts). Exit codes: 0 ok, 2 usage/unreadable file, 3 headroom python missing, 4 compression failed. This is the piece that saves tokens on the *first pass* — `headroom_compress` can only shrink content that is already in context.
+10. **hcat gate (PreToolUse)** — `~/.claude/hcat-gate.sh`, registered on the `Read` tool: when Claude is about to Read a ≥ 16 KB (`HCAT_GATE_BYTES`) `.json/.jsonl/.ndjson/.csv/.tsv/.log` file, it denies **once per file per session** with the exact `hcat` command to run instead; re-Reading the same file passes (escape hatch — the gate is a redirect, never a wall). It allows everything when headroom isn't installed and can be disabled with `HCAT_GATE_OFF=1`. Always exits 0.
 
 ## Install
 
@@ -56,6 +60,13 @@ hook_src = PLUGIN_ROOT / "scripts" / "dangi-hook.sh"
 hook_dest = pathlib.Path.home() / ".claude" / "dangi-hook.sh"
 shutil.copyfile(hook_src, hook_dest)
 hook_dest.chmod(0o755)
+
+hcat_dest = pathlib.Path.home() / ".claude" / "hcat"
+shutil.copyfile(PLUGIN_ROOT / "scripts" / "hcat", hcat_dest)
+hcat_dest.chmod(0o755)
+gate_dest = pathlib.Path.home() / ".claude" / "hcat-gate.sh"
+shutil.copyfile(PLUGIN_ROOT / "scripts" / "hcat-gate.sh", gate_dest)
+gate_dest.chmod(0o755)
 
 p = pathlib.Path.home() / ".claude" / "settings.json"
 data = json.loads(p.read_text()) if p.exists() else {}
@@ -90,14 +101,23 @@ if not any(HOOK_MARK in json.dumps(e) for e in ptu):
         "hooks": [{"type": "command", "command": 'bash "' + str(hook_dest) + '"', "timeout": 10}],
     })
 
+GATE_MARK = "hcat-gate.sh"
+pre = hooks.get("PreToolUse")
+pre = hooks["PreToolUse"] = pre if isinstance(pre, list) else []
+if not any(GATE_MARK in json.dumps(e) for e in pre):
+    pre.append({
+        "matcher": "Read",
+        "hooks": [{"type": "command", "command": 'bash "' + str(gate_dest) + '"', "timeout": 10}],
+    })
+
 p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-print("headroom status line", mode, "+ dangi hook registered")
+print("headroom status line", mode, "+ dangi hook + hcat gate registered")
 PY
 ```
 
 Upgrading from v1 is the same command: a v1 standalone one-liner (contains `OLD_MARK`) is replaced outright; a v1 merged install re-merges from the backup.
 
-**To restore** the user's original status line: copy `_headroomStatusLineBackup` back over `statusLine`, delete the backup key, and optionally remove `~/.claude/headroom-statusline.sh` and `~/.claude/headroom-indicator/`. Also remove the `hooks.PostToolUse` entry referencing `dangi-hook.sh`, and delete `~/.claude/dangi-hook.sh`.
+**To restore** the user's original status line: copy `_headroomStatusLineBackup` back over `statusLine`, delete the backup key, and optionally remove `~/.claude/headroom-statusline.sh` and `~/.claude/headroom-indicator/`. Also remove the `hooks.PostToolUse` entry referencing `dangi-hook.sh` and the `hooks.PreToolUse` entry referencing `hcat-gate.sh`, and delete `~/.claude/dangi-hook.sh`, `~/.claude/hcat-gate.sh`, and `~/.claude/hcat`.
 
 ## Verify Before Trusting It
 
@@ -147,3 +167,5 @@ All knobs live in `scripts/statusline.sh` (edit, then re-run the installer):
 - **Different MCP tool:** change `TOOL=` (drop the `tokens_saved` sum if that tool doesn't report one).
 - **Nudge threshold:** `NUDGE_BYTES` (default 4096) — minimum tool-result size that counts as a missed compression opportunity. Raise it if code-file reads trigger false nags.
 - **Dangi cooldowns:** `NUDGE_COOLDOWN` (60 s between context nudges) and `NOTIFY_COOLDOWN` (300 s between notifications) in `dangi-hook.sh`; set `DANGI_NO_NOTIFY=1` in your environment to disable notifications entirely.
+- **Gate threshold:** `HCAT_GATE_BYTES` (default 16384) — minimum file size the Read gate fires on; `HCAT_GATE_OFF=1` disables the gate; the gated extension list is the `case` in `hcat-gate.sh`.
+- **hcat python:** `HCAT_PYTHON` — explicit path to headroom's venv python (authoritative override; otherwise resolved from `headroom` on PATH, then `~/.headroom-venv/bin/python`).
