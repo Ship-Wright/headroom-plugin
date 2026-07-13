@@ -190,6 +190,14 @@ check "cache upgrade: stale 4-field line recomputed" "1 big blob uncompressed" "
 fields=$(awk -F'|' '{print NF; exit}' "$HEADROOM_STATE_DIR/session-sess-n7.cache")
 check "cache upgrade: rewritten with 5 fields" "5" "$fields"
 
+# 16. string-form tool_result content is measured too (the dominant shape in real transcripts)
+strpad=$(printf 'x%.0s' $(seq 1 4096))
+printf '%s\n%s\n' \
+  '{"message":{"content":[{"type":"tool_use","id":"s1","name":"Bash"}]}}' \
+  "{\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"s1\",\"content\":\"$strpad\"}]}}" > "$TMP/t_str.jsonl"
+out=$(badge "$TMP/t_str.jsonl" claude-opus-4-8 sess-n8)
+check "nudge: string-form content" "1 big blob uncompressed" "$out"
+
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck "$SCRIPT"; then

@@ -11,7 +11,7 @@ The headroom MCP compresses large, structured tool outputs to save context — b
 
 - 🔴 `○ headroom idle (not compressing yet)` — until `headroom_compress` runs this session; becomes `○ headroom idle · 4 big blobs uncompressed` when large tool results are going uncompressed
 - 🟢 `● headroom · ~2.4k tok · $0.007 · 3× | $1.83 all-time` — for 60s after a compression
-- ⚪ `○ headroom idle · ~2.4k tok · $0.007 · 3× · 2 missed | $1.83 all-time` — after 60s of quiet (keeps the totals; ` · N missed` appears when big results since your last compress went uncompressed)
+- ⚪ `○ headroom idle · ~2.4k tok · $0.007 · 3× · 2 missed | $1.83 all-time` — after 60s of quiet (keeps the totals; ` · N missed` appears when more big results arrived than you've compressed)
 
 **Core principle:** detect real usage from the session transcript, not from intent. It counts `tool_use` calls to `mcp__headroom__headroom_compress` and sums the `tokens_saved` those calls actually reported — so it can't lie. The dollar figure prices those tokens at the **session model's input rate** (a conservative floor — see below).
 
