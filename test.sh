@@ -57,6 +57,25 @@ printf '%s\n' '{"message":{"content":[{"type":"tool_use","id":"s1","name":"mcp__
 out=$(badge "$TMP/t_stats.jsonl" claude-opus-4-8 sess-stats)
 check "stats-only: idle"   "not compressing yet" "$out"
 
+# --- 3. money: 500 tok on opus-4-8 = $0.0025 → shown as cents
+out=$(badge "$TMP/t_active.jsonl" claude-opus-4-8 sess-money)
+check "money: cents"        "0.25¢"      "$out"
+
+# 10,000 tok on fable-5 = $0.10 → dollars + k-abbreviated tokens
+compress_event big 10000 > "$TMP/t_big.jsonl"
+out=$(badge "$TMP/t_big.jsonl" claude-fable-5 sess-big)
+check "money: dollars"      "\$0.10"     "$out"
+check "tokens: k-abbrev"    "~10.0k tok" "$out"
+
+# --- 4. unknown model → tokens-only, never a wrong dollar figure
+# Fresh state dir: once lifetime totals exist (Task 4), earlier sessions' "$X all-time"
+# segment would otherwise leak into this badge and false-fail the absence checks.
+export HEADROOM_STATE_DIR="$TMP/state-2"
+out=$(badge "$TMP/t_active.jsonl" some-future-model sess-unknown)
+check "unknown model: tokens"      "~500 tok" "$out"
+check_absent "unknown model: no ¢" "¢"        "$out"
+check_absent "unknown model: no \$" "\$"      "$out"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
