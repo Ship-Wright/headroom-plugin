@@ -245,6 +245,15 @@ else
   FAIL=$((FAIL+1))
 fi
 
+# --- 20. status-line mascot
+export HEADROOM_STATE_DIR="$TMP/state-mascot"
+big_result_event m1 Bash 4096 > "$TMP/t_mascot.jsonl"
+out=$(badge "$TMP/t_mascot.jsonl" claude-opus-4-8 sess-m1)
+check "mascot: awake with count" "🤖 dangi: 1!" "$out"
+compress_event m2 500 > "$TMP/t_asleep.jsonl"
+out=$(badge "$TMP/t_asleep.jsonl" claude-opus-4-8 sess-m2)
+check "mascot: asleep when clear" "😴 dangi" "$out"
+
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck "$SCRIPT" "$DANGI"; then
