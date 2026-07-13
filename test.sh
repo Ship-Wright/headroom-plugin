@@ -241,6 +241,23 @@ check_absent "dangi: image response excluded" "additionalContext" "$out"
 out=$(hook_input WebFetch 9000 dangi-s9 | bash "$DANGI")
 check_absent "dangi: WebFetch excluded" "additionalContext" "$out"
 
+# hcat receipts ARE compressions — their outputs are never nudge targets
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"dangi-s13",
+  tool_response:("── hcat: /tmp/x.json · 10 lines · 5.0 KB · ~9000 tok → ~3000 tok (66.7% saved)\n" + ("y"*9000))}' | bash "$DANGI")
+check_absent "dangi: hcat receipt excluded" "additionalContext" "$out"
+# ...even buried mid-text after a persisted-output preview banner
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"dangi-s14",
+  tool_response:("Output too large. Preview:\n── hcat: /tmp/x.json · ~9000 tok → ~3000 tok (66.7% saved)\n" + ("y"*9000))}' | bash "$DANGI")
+check_absent "dangi: buried hcat receipt excluded" "additionalContext" "$out"
+# ...and in object-form tool_responses, where tostring JSON-escapes the newlines
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"dangi-s15",
+  tool_response:{stdout:("── hcat: /tmp/x.json · ~9000 tok → ~3000 tok (66.7% saved)\n" + ("y"*9000)), stderr:""}}' | bash "$DANGI")
+check_absent "dangi: object-form receipt excluded" "additionalContext" "$out"
+# a big blob that merely mentions hcat mid-line is still a missed opportunity
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"dangi-s16",
+  tool_response:("run hcat <path> next time maybe " + ("y"*9000))}' | bash "$DANGI")
+check "dangi: mid-line hcat mention still nudges" "additionalContext" "$out"
+
 # size must be bytes, not codepoints: 3000 two-byte chars = 6000 bytes ≥ 4096
 out=$(jq -n --arg sid dangi-s10 '{hook_event_name:"PostToolUse", tool_name:"Bash",
   session_id:$sid, tool_response:("é"*3000)}' | bash "$DANGI")

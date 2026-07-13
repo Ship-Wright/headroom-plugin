@@ -28,8 +28,14 @@ if printf '%s' "$in" | jq -e '.tool_response | tostring | contains("\"type\":\"i
   exit 0
 fi
 
+txt=$(printf '%s' "$in" | jq -j '.tool_response // "" | tostring' 2>/dev/null) || exit 0
+# hcat receipts ARE compressions — never nudge on an output that carries one.
+# Substring match on the distinctive header marker: the receipt may sit at the
+# start, after a persisted-output preview banner, or JSON-escaped inside an
+# object-form response.
+case "$txt" in *"── hcat: "*) exit 0 ;; esac
 # Size in BYTES (jq length counts codepoints and undercounts non-ASCII).
-size=$(printf '%s' "$in" | jq -j '.tool_response // "" | tostring' 2>/dev/null | wc -c | tr -d ' ') || exit 0
+size=$(printf '%s' "$txt" | wc -c | tr -d ' ') || exit 0
 case "$size" in (*[!0-9]*|"") exit 0 ;; esac
 [ "$size" -ge "$NUDGE_BYTES" ] || exit 0
 
