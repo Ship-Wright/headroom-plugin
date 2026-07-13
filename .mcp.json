@@ -2,7 +2,7 @@
   "mcpServers": {
     "headroom": {
       "type": "stdio",
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launcher.sh",
+      "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/mcp-launcher.sh",
       "args": [],
       "env": {
         "HEADROOM_UPDATE_CHECK": "off",

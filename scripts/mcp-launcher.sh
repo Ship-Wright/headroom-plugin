@@ -2,9 +2,12 @@
 # mcp-launcher.sh — plugin-bundled entry point for the headroom MCP server.
 #
 # Referenced by the plugin's .mcp.json so enabling the plugin auto-registers
-# the headroom MCP: no manual `claude mcp add` step. Resolves the headroom
-# engine (same order as bin/hcat: $HCAT_PYTHON authoritative → sibling of
-# `headroom` on PATH → ~/.headroom-venv) and execs the exact invocation a
+# the headroom MCP: no manual `claude mcp add` step. Unlike bin/hcat, this
+# only needs the `headroom` CLI — no importable python — so pip --user and
+# pipx layouts (console script with no sibling python) work. Resolution:
+# $HCAT_PYTHON's directory's `headroom` (the override is authoritative when
+# set — same contract as bin/hcat, no fallback) → `headroom` on PATH (used
+# directly) → ~/.headroom-venv/bin/headroom. Execs the exact invocation a
 # manual registration would use: `headroom mcp serve`, offline.
 #
 # Engine missing → one helpful stderr line naming the doctor, nonzero exit.
@@ -12,18 +15,16 @@ set -u
 
 VENV_DIR=${DOCTOR_VENV_DIR:-$HOME/.headroom-venv}
 
-PY=""
-if [ -n "${HCAT_PYTHON:-}" ]; then
-  [ -x "$HCAT_PYTHON" ] && PY=$HCAT_PYTHON   # explicit override: no fallback
-else
-  for cand in "$(dirname "$(command -v headroom 2>/dev/null || echo /nonexistent)")/python" "$VENV_DIR/bin/python"; do
-    if [ -x "$cand" ]; then PY=$cand; break; fi
-  done
-fi
-
 BIN=""
-if [ -n "$PY" ] && [ -x "$(dirname "$PY")/headroom" ]; then
-  BIN="$(dirname "$PY")/headroom"
+if [ -n "${HCAT_PYTHON:-}" ]; then
+  # explicit override: authoritative, no fallback
+  cand="$(dirname "$HCAT_PYTHON")/headroom"
+  [ -x "$cand" ] && BIN=$cand
+else
+  BIN=$(command -v headroom 2>/dev/null || true)
+  if [ -z "$BIN" ] && [ -x "$VENV_DIR/bin/headroom" ]; then
+    BIN="$VENV_DIR/bin/headroom"
+  fi
 fi
 if [ -z "$BIN" ]; then
   echo "headroom engine not found — run the plugin doctor with --fix (/headroom-usage-indicator:doctor), or: python3 -m venv ~/.headroom-venv && ~/.headroom-venv/bin/pip install headroom" >&2

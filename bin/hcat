@@ -11,9 +11,24 @@
 #             4 compression failed
 #
 # Python resolution (first hit wins): $HCAT_PYTHON → sibling "python" of
-# `headroom` on PATH → ~/.headroom-venv/bin/python.
+# `headroom` on PATH → the `headroom` console script's shebang interpreter
+# (pip --user / pipx layouts ship no sibling python) → ~/.headroom-venv/bin/python.
 
 set -u
+
+shebang_interp() {  # shebang_interp <script> — interpreter path from its #! line
+  local line rest
+  IFS= read -r line < "$1" 2>/dev/null || return 1
+  case $line in '#!'*) ;; *) return 1 ;; esac
+  rest=${line#'#!'}
+  # shellcheck disable=SC2086
+  set -- $rest
+  [ $# -ge 1 ] || return 1
+  case $1 in
+    */env|env) [ $# -ge 2 ] || return 1; command -v "$2" 2>/dev/null ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
 
 if [ $# -ne 1 ] || [ -z "${1:-}" ]; then
   echo "usage: hcat <file>" >&2
@@ -29,8 +44,11 @@ PY=""
 if [ -n "${HCAT_PYTHON:-}" ]; then
   PY=$HCAT_PYTHON            # explicit override is authoritative — no fallback
 else
-  for cand in "$(dirname "$(command -v headroom 2>/dev/null || echo /nonexistent)")/python" "$HOME/.headroom-venv/bin/python"; do
-    if [ -x "$cand" ]; then PY=$cand; break; fi
+  HR_CLI=$(command -v headroom 2>/dev/null || true)
+  for cand in "${HR_CLI:+$(dirname "$HR_CLI")/python}" \
+              "$([ -n "$HR_CLI" ] && shebang_interp "$HR_CLI")" \
+              "$HOME/.headroom-venv/bin/python"; do
+    if [ -n "$cand" ] && [ -x "$cand" ]; then PY=$cand; break; fi
   done
 fi
 if [ -z "$PY" ] || [ ! -x "$PY" ]; then
