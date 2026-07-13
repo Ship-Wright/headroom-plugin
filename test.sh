@@ -105,6 +105,37 @@ out=$(badge "$TMP/t_life_b.jsonl" claude-opus-4-8 sess-life-b)
 check "lifetime: shown from 2nd session" "all-time"       "$out"
 check "lifetime: summed usd"             "0.50¢ all-time" "$out"
 
+# --- 8. decay badge: a compress event with an old timestamp renders dim idle, never green/red
+rm -rf "$HEADROOM_STATE_DIR"
+printf '%s\n%s\n' \
+  '{"timestamp":"2020-01-01T00:00:00.000Z","message":{"content":[{"type":"tool_use","id":"d1","name":"mcp__headroom__headroom_compress"}]}}' \
+  '{"message":{"content":[{"type":"tool_result","tool_use_id":"d1","content":[{"type":"text","text":"{\"tokens_saved\": 500}"}]}]}}' \
+  > "$TMP/t_decay.jsonl"
+out=$(badge "$TMP/t_decay.jsonl" claude-opus-4-8 sess-decay)
+check "decay: dim idle badge"  "○ headroom idle · ~500 tok"  "$out"
+check_absent "decay: not active" "●"                          "$out"
+
+# --- 9. fix 1: sessions that saved nothing must not get a totals file
+rm -rf "$HEADROOM_STATE_DIR"
+printf '%s\n' '{"message":{"content":[{"type":"tool_use","id":"s1","name":"mcp__headroom__headroom_stats"}]}}' > "$TMP/t_zero.jsonl"
+badge "$TMP/t_zero.jsonl" claude-opus-4-8 sess-zero > /dev/null
+if [ -e "$HEADROOM_STATE_DIR/session-sess-zero.totals" ]; then
+  echo "FAIL - fix1: no totals file for zero-saved session"
+  echo "    found: $HEADROOM_STATE_DIR/session-sess-zero.totals"
+  FAIL=$((FAIL+1))
+else
+  echo "ok - fix1: no totals file for zero-saved session"; PASS=$((PASS+1))
+fi
+
+# --- 10. fix 2: a model switch mid-session must never shrink the session's recorded usd
+rm -rf "$HEADROOM_STATE_DIR"
+compress_event sw1 500 > "$TMP/t_switch.jsonl"
+badge "$TMP/t_switch.jsonl" claude-opus-4-8 sess-switch > /dev/null
+check "fix2: initial totals usd" "0.002500" "$(cat "$HEADROOM_STATE_DIR/session-sess-switch.totals")"
+compress_event sw2 100 >> "$TMP/t_switch.jsonl"
+badge "$TMP/t_switch.jsonl" claude-haiku-4-5 sess-switch > /dev/null
+check "fix2: totals usd never shrinks on model switch" "0.002500" "$(cat "$HEADROOM_STATE_DIR/session-sess-switch.totals")"
+
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck "$SCRIPT"; then

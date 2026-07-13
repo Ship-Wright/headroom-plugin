@@ -78,10 +78,17 @@ if [ -n "$tp" ] && [ -f "$tp" ]; then
     compute
     if [ -n "$cache" ] && mkdir -p "$STATE_DIR" 2>/dev/null; then
       printf '%s|%s|%s|%s\n' "${size:-0}" "$n" "$saved" "$last_ts" > "$cache" 2>/dev/null || true
-      t_price=$(price_per_mtok "$model")
-      t_usd=0
-      [ -n "$t_price" ] && t_usd=$(usd_of "$saved" "$t_price")
-      printf '%s %s\n' "$saved" "$t_usd" > "$STATE_DIR/session-$sid.totals" 2>/dev/null || true
+      if [ "$saved" -gt 0 ] 2>/dev/null; then
+        t_price=$(price_per_mtok "$model")
+        t_usd=0
+        [ -n "$t_price" ] && t_usd=$(usd_of "$saved" "$t_price")
+        tf="$STATE_DIR/session-$sid.totals"
+        if [ -f "$tf" ]; then
+          read -r _ old_usd < "$tf" || old_usd=0
+          t_usd=$(awk -v a="$t_usd" -v b="${old_usd:-0}" 'BEGIN{printf "%.6f", (a>b)?a:b}')
+        fi
+        printf '%s %s\n' "$saved" "$t_usd" > "$tf" 2>/dev/null || true
+      fi
     fi
   fi
 fi

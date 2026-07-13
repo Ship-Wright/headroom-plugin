@@ -28,7 +28,7 @@ All logic lives in one shipped script, `scripts/statusline.sh` (in this plugin, 
 2. **Counts & sums** — `tool_use` blocks named `mcp__headroom__headroom_compress`; `tokens_saved` from results linked by `tool_use_id` (never grep for raw strings — `headroom_stats` results and prose mentions are false positives).
 3. **Money** — `tokens_saved × input-$/MTok` for the session's `model.id`, from a table in `price_per_mtok()`. Unknown model → tokens-only badge (never a wrong dollar figure). This is the *floor*: compressed content would have re-entered context on later turns (mostly at the 0.1× cache-read rate), so real savings compound above it.
 4. **Cache** — per-session results cached in `~/.claude/headroom-indicator/session-<id>.cache` keyed on transcript byte size; unchanged size skips the jq parse (a `stat` call instead of an O(transcript) parse every second).
-5. **Lifetime** — each session writes `session-<id>.totals` (`tokens usd`); the badge sums them into `| $X all-time` once more than one session exists.
+5. **Lifetime** — a session writes `session-<id>.totals` (`tokens usd`) only once it has actually saved tokens (sessions that never compress anything don't leave a file behind); if the session's model changes mid-session, the recorded usd is only ever raised, never lowered, by re-pricing at the new rate — a switch to a cheaper or unpriced model can't shrink what's already been credited. The badge sums existing totals files into `| $X all-time` once more than one session exists.
 6. **Decay** — timestamp of the last compress; within 60s → bright green, else dim (totals retained).
 
 ## Install
