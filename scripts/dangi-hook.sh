@@ -13,7 +13,9 @@ NUDGE_BYTES=4096       # tool outputs at least this large are compression candid
 NUDGE_COOLDOWN=60      # seconds between context nudges per session
 NOTIFY_COOLDOWN=300    # seconds between macOS notifications per session
 HPREFIX="mcp__headroom__"
-STATE_DIR="${HEADROOM_STATE_DIR:-$HOME/.claude/headroom-indicator}"
+# HOME can be unset in hook environments (set -u would kill every tool call);
+# degrade to a temp-dir state location rather than dying.
+STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
 
 in=$(cat)
 
@@ -28,12 +30,18 @@ if printf '%s' "$in" | jq -e '.tool_response | tostring | contains("\"type\":\"i
   exit 0
 fi
 
+# hcat invocations ARE compressions — never nudge on their output. The check
+# is STRUCTURAL: only a Bash call whose .tool_input.command actually invokes
+# hcat is exempt; outputs that merely QUOTE a receipt line (grep/cat over
+# docs or tests) are still missed opportunities.
+if [ "$tool" = "Bash" ]; then
+  cmd=$(printf '%s' "$in" | jq -r '.tool_input.command // empty' 2>/dev/null) || cmd=""
+  if printf '%s' "$cmd" | LC_ALL=C grep -Eq '(^|[|;&][[:space:]]*|\$\([[:space:]]*|/)hcat([[:space:]]|$)'; then
+    exit 0
+  fi
+fi
+
 txt=$(printf '%s' "$in" | jq -j '.tool_response // "" | tostring' 2>/dev/null) || exit 0
-# hcat receipts ARE compressions — never nudge on an output that carries one.
-# Substring match on the distinctive header marker: the receipt may sit at the
-# start, after a persisted-output preview banner, or JSON-escaped inside an
-# object-form response.
-case "$txt" in *"── hcat: "*) exit 0 ;; esac
 # Size in BYTES (jq length counts codepoints and undercounts non-ASCII).
 size=$(printf '%s' "$txt" | wc -c | tr -d ' ') || exit 0
 case "$size" in (*[!0-9]*|"") exit 0 ;; esac
@@ -94,6 +102,6 @@ fi
 [ "$locked" -eq 1 ] && rmdir "$lock" 2>/dev/null
 
 if [ "$nudge" -eq 1 ]; then
-  printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"🤖 Dangi: that %s output was ~%s KB and was not compressed. If it came from a file on disk, run hcat \\"<path>\\" via Bash next time (hcat is on PATH while this plugin is enabled) — raw bytes never enter context. If it is not file-backed but structured/repetitive, use mcp__headroom__headroom_compress, or read+compress it inside a disposable subagent that returns only the compressed text."}}' "$tool" "$kb"
+  printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"🤖 Dangi: that %s output was ~%s KB and was not compressed. If it came from a file on disk, run hcat \\"<path>\\" via Bash next time (plugin installs have it on PATH; legacy installs use ~/.claude/hcat) — raw bytes never enter context. If it is not file-backed but structured/repetitive, use mcp__headroom__headroom_compress, or read+compress it inside a disposable subagent that returns only the compressed text."}}' "$tool" "$kb"
 fi
 exit 0

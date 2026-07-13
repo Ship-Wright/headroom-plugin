@@ -6,7 +6,9 @@
 set -u
 
 TOOL="mcp__headroom__headroom_compress"
-STATE_DIR="${HEADROOM_STATE_DIR:-$HOME/.claude/headroom-indicator}"
+# HOME can be unset in hook/statusline environments (set -u would kill us);
+# degrade to a temp-dir state location rather than dying on every render.
+STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
 NUDGE_BYTES=4096            # tool results at least this large count as compression candidates
 HPREFIX="mcp__headroom__"   # results of headroom's own tools are never "missed"
 
@@ -16,9 +18,12 @@ tp=$(printf '%s' "$in" | jq -r '.transcript_path // empty' 2>/dev/null) || tp=""
 model=$(printf '%s' "$in" | jq -r '.model.id // empty' 2>/dev/null) || model=""
 sid=$(printf '%s' "$in" | jq -r '.session_id // empty' 2>/dev/null) || sid=""
 
+# All awk math runs under LC_ALL=C: BSD awk honors LC_NUMERIC, and a
+# comma-decimal locale (de_DE, …) would corrupt printed money and the
+# session-*.totals files (later summed as 0).
 fmt_tok() {  # 2400 -> "2.4k", 500 -> "500"
   if [ "$1" -ge 1000 ] 2>/dev/null; then
-    awk -v t="$1" 'BEGIN{printf "%.1fk", t/1000}'
+    LC_ALL=C awk -v t="$1" 'BEGIN{printf "%.1fk", t/1000}'
   else
     printf '%s' "$1"
   fi
@@ -38,11 +43,11 @@ price_per_mtok() {  # input $/MTok by model-id substring; empty = unknown
 }
 
 usd_of() {  # usd_of <tokens> <price-per-mtok> -> dollars (6 dp)
-  awk -v t="$1" -v p="$2" 'BEGIN{printf "%.6f", t*p/1000000}'
+  LC_ALL=C awk -v t="$1" -v p="$2" 'BEGIN{printf "%.6f", t*p/1000000}'
 }
 
 fmt_usd() {  # dollars -> "$0.03" (>= 1 cent) or "0.42¢"
-  awk -v u="$1" 'BEGIN{ if (u>=0.01) printf "$%.2f", u; else printf "%.2f¢", u*100 }'
+  LC_ALL=C awk -v u="$1" 'BEGIN{ if (u>=0.01) printf "$%.2f", u; else printf "%.2f¢", u*100 }'
 }
 
 n=0; saved=0; last_ts=""; missed=0
@@ -50,9 +55,13 @@ n=0; saved=0; last_ts=""; missed=0
 # One slurped jq pass fills n / saved / last_ts / missed. Compressions are
 # MCP compress calls PLUS hcat receipts — tool_results whose text carries the
 # "── hcat: … ~B tok → ~A tok" header (matched at any line start: persisted
-# big outputs prepend a preview banner). Passthrough receipts have no arrow
-# and count as nothing. Receipts are excluded from "big" (they ARE the
-# compression, not a missed opportunity), so missed stays big − MCP-count.
+# big outputs prepend a preview banner). Receipts are attributed
+# STRUCTURALLY: a receipt counts only when its tool_result links
+# (tool_use_id) to a Bash tool_use whose .input.command actually invokes
+# hcat — outputs that merely QUOTE a receipt line (grep/cat over docs or
+# tests) count as nothing (and, if big, as missed). Passthrough receipts
+# have no arrow and count as nothing. Genuine receipts are excluded from
+# "big" (they ARE the compression, not a missed opportunity).
 compute() {
   local out big hn hsaved
   out=$(jq -rs --arg tool "$TOOL" --arg pfx "$HPREFIX" --argjson min "$NUDGE_BYTES" '
@@ -60,18 +69,22 @@ compute() {
                          elif type=="array" then ([.[]? | .text? // ""] | join(""))
                          else "" end);
     def is_receipt: test("(^|\\n)── hcat: ");
+    def is_hcat_cmd: test("(^|\\n|[|;&]\\s*|[$][(]\\s*|/)hcat(\\s|$)");
     ([.[]|.message.content[]? | select(.type=="tool_use" and .name==$tool) | .id]) as $mids
     | ([.[]|.message.content[]? | select(.type=="tool_use" and ((.name // "")|startswith($pfx))) | .id]) as $hpids
+    | ([.[]|.message.content[]? | select(.type=="tool_use" and (.name // "")=="Bash"
+        and ((.input.command? // "") | is_hcat_cmd)) | .id]) as $hcids
     | ([.[]|.message.content[]? | select(.type=="tool_result")
         | {id: (.tool_use_id // ""), t: txt}]) as $res
-    | ($res | map(select(.t | is_receipt)
+    | def is_genuine: (.t | is_receipt) and ((.id as $t | $hcids | index($t)) != null);
+      ($res | map(select(is_genuine)
         | (try (.t | capture("~(?<b>[0-9]+) tok → ~(?<a>[0-9]+) tok")) catch null) as $c
         | select($c != null)
         | {id: .id, s: (($c.b|tonumber) - ($c.a|tonumber))})) as $rcpt
     | ($res | map(select(.id as $t | $mids | index($t))
         | (try (.t | fromjson.tokens_saved) catch 0) // 0) | add // 0) as $saved
     | ($res | map(select(((.id as $t | $hpids | index($t)) == null)
-        and ((.t | is_receipt) | not)
+        and (is_genuine | not)
         and ((.t | length) >= $min))) | length) as $big
     | ($rcpt | map(.id)) as $rids
     | ([.[] | select(.timestamp)
@@ -109,7 +122,7 @@ if [ -n "$tp" ] && [ -f "$tp" ]; then
         tf="$STATE_DIR/session-$sid.totals"
         if [ -f "$tf" ]; then
           read -r _ old_usd < "$tf" || old_usd=0
-          t_usd=$(awk -v a="$t_usd" -v b="${old_usd:-0}" 'BEGIN{printf "%.6f", (a>b)?a:b}')
+          t_usd=$(LC_ALL=C awk -v a="$t_usd" -v b="${old_usd:-0}" 'BEGIN{printf "%.6f", (a>b)?a:b}')
         fi
         printf '%s %s\n' "$saved" "$t_usd" > "$tf" 2>/dev/null || true
       fi
@@ -134,8 +147,8 @@ fi
 lifetime=""
 totals_count=$(find "$STATE_DIR" -name 'session-*.totals' 2>/dev/null | wc -l | tr -d ' ')
 if [ "${totals_count:-0}" -gt 1 ] 2>/dev/null; then
-  lt_usd=$(cat "$STATE_DIR"/session-*.totals 2>/dev/null | awk '{u+=$2} END{printf "%.6f", u+0}')
-  if awk -v u="$lt_usd" 'BEGIN{exit !(u>0)}'; then
+  lt_usd=$(cat "$STATE_DIR"/session-*.totals 2>/dev/null | LC_ALL=C awk '{u+=$2} END{printf "%.6f", u+0}')
+  if LC_ALL=C awk -v u="$lt_usd" 'BEGIN{exit !(u>0)}'; then
     lifetime=" | $(fmt_usd "$lt_usd") all-time"
   fi
 fi

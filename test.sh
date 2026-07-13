@@ -241,16 +241,21 @@ check_absent "dangi: image response excluded" "additionalContext" "$out"
 out=$(hook_input WebFetch 9000 dangi-s9 | bash "$DANGI")
 check_absent "dangi: WebFetch excluded" "additionalContext" "$out"
 
-# hcat receipts ARE compressions — their outputs are never nudge targets
+# hcat invocations ARE compressions — their outputs are never nudge targets.
+# (Real PostToolUse input carries the command in .tool_input.command; the hook
+# attributes receipts structurally, so the fixtures carry it too.)
 out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"dangi-s13",
+  tool_input:{command:"hcat \"/tmp/x.json\""},
   tool_response:("── hcat: /tmp/x.json · 10 lines · 5.0 KB · ~9000 tok → ~3000 tok (66.7% saved)\n" + ("y"*9000))}' | bash "$DANGI")
 check_absent "dangi: hcat receipt excluded" "additionalContext" "$out"
-# ...even buried mid-text after a persisted-output preview banner
+# ...even buried mid-text after a persisted-output preview banner (legacy-path form)
 out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"dangi-s14",
+  tool_input:{command:"/Users/abhi/.claude/hcat \"/tmp/x.json\""},
   tool_response:("Output too large. Preview:\n── hcat: /tmp/x.json · ~9000 tok → ~3000 tok (66.7% saved)\n" + ("y"*9000))}' | bash "$DANGI")
 check_absent "dangi: buried hcat receipt excluded" "additionalContext" "$out"
-# ...and in object-form tool_responses, where tostring JSON-escapes the newlines
+# ...and in object-form tool_responses, where tostring JSON-escapes the newlines (chained form)
 out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"dangi-s15",
+  tool_input:{command:"cd /tmp && hcat x.json"},
   tool_response:{stdout:("── hcat: /tmp/x.json · ~9000 tok → ~3000 tok (66.7% saved)\n" + ("y"*9000)), stderr:""}}' | bash "$DANGI")
 check_absent "dangi: object-form receipt excluded" "additionalContext" "$out"
 # a big blob that merely mentions hcat mid-line is still a missed opportunity
@@ -421,10 +426,12 @@ fi
 export HEADROOM_STATE_DIR="$TMP/state-hcat-badge"
 
 hcat_event() {  # hcat_event <tool-use-id> <before-tok> <after-tok> [pad-bytes]
+  # Real transcripts carry the Bash command in tool_use .input.command — the
+  # badge attributes receipts structurally, so the fixture must carry it too.
   local pad=""
   [ -n "${4:-}" ] && pad=$(head -c "$4" /dev/zero | tr '\0' 'y')
   printf '%s\n%s\n' \
-    "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"$1\",\"name\":\"Bash\"}]}}" \
+    "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"$1\",\"name\":\"Bash\",\"input\":{\"command\":\"hcat \\\"/tmp/x.json\\\"\"}}]}}" \
     "{\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"$1\",\"content\":[{\"type\":\"text\",\"text\":\"── hcat: /tmp/x.json · 10 lines · 5.0 KB · ~$2 tok → ~$3 tok (60.0% saved) · original on disk\\n$pad\"}]}]}}"
 }
 
@@ -449,7 +456,7 @@ check "hcat badge: mixed count" "2×"   "$out"
 
 # a persisted big output buries the receipt mid-text after a preview banner
 printf '%s\n%s\n' \
-  "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"h5\",\"name\":\"Bash\"}]}}" \
+  "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"h5\",\"name\":\"Bash\",\"input\":{\"command\":\"hcat \\\"/tmp/z.json\\\"\"}}]}}" \
   '{"message":{"content":[{"type":"tool_result","tool_use_id":"h5","content":[{"type":"text","text":"Output too large (32.1KB). Full output saved.\nPreview (first 2KB):\n── hcat: /tmp/z.json · 9 lines · 8.0 KB · ~2000 tok → ~800 tok (60.0% saved) · original on disk\n..."}]}]}}' \
   > "$TMP/t_persist.jsonl"
 out=$(badge "$TMP/t_persist.jsonl" claude-opus-4-8 sess-hpers)
@@ -457,7 +464,7 @@ check "hcat badge: persisted preview receipt counted" "1.2k" "$out"
 
 # passthrough receipts (no "→") are not compressions
 printf '%s\n%s\n' \
-  "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"h4\",\"name\":\"Bash\"}]}}" \
+  "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"h4\",\"name\":\"Bash\",\"input\":{\"command\":\"hcat \\\"/tmp/y.txt\\\"\"}}]}}" \
   '{"message":{"content":[{"type":"tool_result","tool_use_id":"h4","content":[{"type":"text","text":"── hcat: /tmp/y.txt · 3 lines · 0.1 KB · passthrough (compression would save 0.0%)\nshort prose line"}]}]}}' \
   > "$TMP/t_pass.jsonl"
 out=$(badge "$TMP/t_pass.jsonl" claude-opus-4-8 sess-hp)
@@ -499,9 +506,9 @@ out=$(hook_input Bash 9000 plugnat-d1 | CLAUDE_PLUGIN_ROOT="$ROOT" sh -c "$dangi
 check "plugin-native dangi: nudges via hooks.json command" "additionalContext" "$out"
 check "plugin-native dangi: exit 0" "0" "$rc"
 check "dangi nudge: plain hcat form (on PATH)" 'hcat \"<path>\"' "$out"
-check "dangi nudge: says it is on PATH" "on PATH" "$out"
-check_absent "dangi nudge: no ~/.claude" "~/.claude" "$out"
-check_absent "dangi nudge: no .claude/hcat" ".claude/hcat" "$out"
+check "dangi nudge: says plugin installs have it on PATH" "plugin installs have it on PATH" "$out"
+check "dangi nudge: names legacy fallback" "~/.claude/hcat" "$out"
+check_absent "dangi nudge: no plugin-internal path" "bin/hcat" "$out"
 
 if [ -n "$HEADROOM_PY" ]; then
   out=$(gate_input "$TMP/hc_big.json" plugnat-g1 | CLAUDE_PLUGIN_ROOT="$ROOT" sh -c "$gate_cmd"); rc=$?
@@ -818,6 +825,125 @@ check "doctor skill: frontmatter name"     "name: doctor" "$(head -5 "$DSKILL" 2
 check "doctor skill: triggers on breakage" "not working"  "$(cat "$DSKILL" 2>/dev/null)"
 check "doctor skill: runs doctor.sh"       "doctor.sh"    "$(cat "$DSKILL" 2>/dev/null)"
 check "doctor skill: consent before --fix" "consent"      "$(cat "$DSKILL" 2>/dev/null)"
+
+# --- 34. review fixes: badge + hooks
+export HEADROOM_STATE_DIR="$TMP/state-review"
+
+# 34a. receipt attribution is structural: a tool result that merely QUOTES a
+# receipt line (grep/cat over docs or this very test file) must not count.
+quote_event() {  # quote_event <id> <bash-command> [pad-bytes] — result quotes a receipt lookalike
+  local pad=""
+  [ -n "${3:-}" ] && pad=$(head -c "$3" /dev/zero | tr '\0' 'y')
+  printf '%s\n%s\n' \
+    "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"$1\",\"name\":\"Bash\",\"input\":{\"command\":\"$2\"}}]}}" \
+    "{\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"$1\",\"content\":[{\"type\":\"text\",\"text\":\"── hcat: /x.json · ~9999999 tok → ~1 tok (100.0% saved)\\n$pad\"}]}]}}"
+}
+quote_event q1 "grep -rn hcat-header notes" > "$TMP/t_rquote.jsonl"
+out=$(badge "$TMP/t_rquote.jsonl" claude-opus-4-8 sess-rq1)
+check "review: quoted receipt renders idle"      "not compressing yet" "$out"
+check_absent "review: quoted receipt never green" "●"                  "$out"
+if [ -e "$HEADROOM_STATE_DIR/session-sess-rq1.totals" ]; then
+  echo "FAIL - review: quoted receipt writes no totals"
+  echo "    found: $(cat "$HEADROOM_STATE_DIR/session-sess-rq1.totals")"
+  FAIL=$((FAIL+1))
+else
+  echo "ok - review: quoted receipt writes no totals"; PASS=$((PASS+1))
+fi
+
+# a BIG quoted receipt is uncompressed raw text — a missed opportunity, not a save
+quote_event q2 "cat README.md" 6000 > "$TMP/t_rquote_big.jsonl"
+out=$(badge "$TMP/t_rquote_big.jsonl" claude-opus-4-8 sess-rq2)
+check "review: big quoted receipt counts as missed" "1 big blob uncompressed" "$out"
+
+# non-Bash receipts never count (Read of a file that starts with a receipt line)
+printf '%s\n%s\n' \
+  "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"q3\",\"name\":\"Read\",\"input\":{\"file_path\":\"/tmp/notes.txt\"}}]}}" \
+  '{"message":{"content":[{"type":"tool_result","tool_use_id":"q3","content":[{"type":"text","text":"── hcat: /x.json · ~9999999 tok → ~1 tok (100.0% saved)"}]}]}}' \
+  > "$TMP/t_rquote_read.jsonl"
+out=$(badge "$TMP/t_rquote_read.jsonl" claude-opus-4-8 sess-rq3)
+check "review: non-Bash receipt not counted" "not compressing yet" "$out"
+
+# genuine invocations still count in every real spelling
+genuine_event() {  # genuine_event <id> <bash-command> — real receipt, 1000→400
+  printf '%s\n%s\n' \
+    "{\"timestamp\":\"$NOW\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"$1\",\"name\":\"Bash\",\"input\":{\"command\":\"$2\"}}]}}" \
+    "{\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"$1\",\"content\":[{\"type\":\"text\",\"text\":\"── hcat: /tmp/x.json · 10 lines · 5.0 KB · ~1000 tok → ~400 tok (60.0% saved) · original on disk\"}]}]}}"
+}
+genuine_event ga "/Users/abhi/.claude/hcat \\\"/tmp/x.json\\\"" > "$TMP/t_rlegacy.jsonl"
+out=$(badge "$TMP/t_rlegacy.jsonl" claude-opus-4-8 sess-rg1)
+check "review: legacy-path hcat counts" "●"   "$out"
+check "review: legacy-path savings"     "600" "$out"
+genuine_event gb "jq -c . /tmp/x.json | hcat /dev/stdin" > "$TMP/t_rpipe.jsonl"
+out=$(badge "$TMP/t_rpipe.jsonl" claude-opus-4-8 sess-rg2)
+check "review: piped hcat counts" "●" "$out"
+
+# dangi, same attack: quoting a receipt in a grep is still a missed opportunity...
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"rev-d1",
+  tool_input:{command:"grep -rn hcat-header notes"},
+  tool_response:("── hcat: /x.json · ~9999999 tok → ~1 tok (100.0% saved)\n" + ("y"*9000))}' | bash "$DANGI")
+check "review: dangi nudges on quoted receipt" "additionalContext" "$out"
+# ...while a genuine hcat run stays exempt
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"rev-d2",
+  tool_input:{command:"hcat \"/tmp/x.json\""},
+  tool_response:("── hcat: /tmp/x.json · ~9000 tok → ~3000 tok (66.7% saved)\n" + ("y"*9000))}' | bash "$DANGI")
+check_absent "review: dangi exempts genuine hcat run" "additionalContext" "$out"
+
+# 34b. HOME unset (env -u HOME, set -u) must not kill any of the three scripts
+NOHOME_TMP="$TMP/nohome"; mkdir -p "$NOHOME_TMP"
+err=$(printf '{"transcript_path":"%s","model":{"id":"claude-opus-4-8"},"session_id":"rev-nh1"}' "$TMP/t_active.jsonl" \
+  | env -u HOME -u HEADROOM_STATE_DIR TMPDIR="$NOHOME_TMP" bash "$SCRIPT" 2>&1 >"$TMP/nohome.badge"); rc=$?
+check "review: statusline survives unset HOME" "0" "$rc"
+check "review: statusline still prints a badge" "headroom" "$(cat "$TMP/nohome.badge")"
+if [ -z "$err" ]; then
+  echo "ok - review: statusline stderr silent without HOME"; PASS=$((PASS+1))
+else
+  echo "FAIL - review: statusline stderr silent without HOME"
+  echo "    got stderr: $err"; FAIL=$((FAIL+1))
+fi
+err=$(hook_input Bash 9000 rev-nh2 \
+  | env -u HOME -u HEADROOM_STATE_DIR DANGI_NO_NOTIFY=1 TMPDIR="$NOHOME_TMP" bash "$DANGI" 2>&1 >/dev/null); rc=$?
+check "review: dangi survives unset HOME" "0" "$rc"
+if [ -z "$err" ]; then
+  echo "ok - review: dangi stderr silent without HOME"; PASS=$((PASS+1))
+else
+  echo "FAIL - review: dangi stderr silent without HOME"
+  echo "    got stderr: $err"; FAIL=$((FAIL+1))
+fi
+out=$(gate_input "$TMP/hc_small.json" rev-nh3 | env -u HOME -u HEADROOM_STATE_DIR bash "$GATE" 2>&1); rc=$?
+check "review: gate survives unset HOME" "0" "$rc"
+check_absent "review: gate quiet without HOME" "unbound" "$out"
+
+# 34c. gate fails open when the resolved engine python cannot import headroom
+BIGJSON="$TMP/rev_big.json"; head -c 20000 /dev/zero | tr '\0' 'x' > "$BIGJSON"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/rev_brokenpy"; chmod +x "$TMP/rev_brokenpy"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/rev_okpy";     chmod +x "$TMP/rev_okpy"
+out=$(gate_input "$BIGJSON" rev-g1 | HCAT_PYTHON="$TMP/rev_brokenpy" bash "$GATE")
+check_absent "review: gate fails open on import-broken engine" "deny" "$out"
+out=$(gate_input "$BIGJSON" rev-g2 | HCAT_PYTHON="$TMP/rev_okpy" bash "$GATE")
+check "review: gate still denies with importable engine" '"permissionDecision":"deny"' "$out"
+
+# 34d. install-aware deny text: plugin layout claims PATH, legacy layout gives the abs path
+check "review: plugin deny says on PATH" "on PATH" "$out"
+LEGROOT="$TMP/legroot"; mkdir -p "$LEGROOT/legacy"
+cp "$ROOT/scripts/hcat-gate.sh" "$LEGROOT/legacy/"
+printf '#!/bin/sh\nexit 0\n' > "$LEGROOT/legacy/hcat"; chmod +x "$LEGROOT/legacy/hcat"
+out=$(gate_input "$BIGJSON" rev-g3 | HCAT_PYTHON="$TMP/rev_okpy" bash "$LEGROOT/legacy/hcat-gate.sh")
+check "review: legacy deny cites sibling hcat path" "$LEGROOT/legacy/hcat" "$out"
+check_absent "review: legacy deny does not claim PATH" "on PATH" "$out"
+
+# 34e. BSD awk honors LC_NUMERIC — money and totals must stay period-decimal
+if locale -a 2>/dev/null | grep -qix 'de_DE.UTF-8'; then
+  export HEADROOM_STATE_DIR="$TMP/state-locale"
+  out=$(printf '{"transcript_path":"%s","model":{"id":"claude-opus-4-8"},"session_id":"rev-loc"}' "$TMP/t_active.jsonl" \
+    | LC_ALL=de_DE.UTF-8 bash "$SCRIPT")
+  check "review: de_DE money keeps period decimal" "0.25¢" "$out"
+  check_absent "review: de_DE badge has no comma decimal" "0,25" "$out"
+  tot=$(cat "$HEADROOM_STATE_DIR"/session-rev-loc.totals 2>/dev/null)
+  check "review: de_DE totals keep period decimal" "0.002500" "$tot"
+  check_absent "review: de_DE totals carry no comma" "," "$tot"
+else
+  echo "skip - de_DE.UTF-8 locale tests (locale not installed)"
+fi
 
 # --- shellcheck (when available)
 if command -v shellcheck >/dev/null 2>&1; then

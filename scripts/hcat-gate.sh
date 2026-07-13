@@ -11,7 +11,9 @@
 set -u
 
 GATE_BYTES=${HCAT_GATE_BYTES:-16384}   # gate files at least this large
-STATE_DIR="${HEADROOM_STATE_DIR:-$HOME/.claude/headroom-indicator}"
+# HOME can be unset in hook environments (set -u would kill every Read);
+# degrade to a temp-dir state location rather than dying.
+STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
 
 [ -n "${HCAT_GATE_OFF:-}" ] && exit 0
 
@@ -47,12 +49,26 @@ case "$size" in (*[!0-9]*|"") exit 0 ;; esac
 # a legacy ~/.claude install keeps it as a sibling of this script.
 here="$(cd "$(dirname "$0")" && pwd)"
 HCAT="$here/../bin/hcat"
-[ -x "$HCAT" ] || HCAT="$here/hcat"
+legacy=0
+if [ ! -x "$HCAT" ]; then
+  HCAT="$here/hcat"
+  legacy=1
+fi
 [ -x "$HCAT" ] || exit 0
+py=""
 if [ -n "${HCAT_PYTHON:-}" ]; then
-  [ -x "$HCAT_PYTHON" ] || exit 0
-elif [ ! -x "$HOME/.headroom-venv/bin/python" ] && ! command -v headroom >/dev/null 2>&1; then
-  exit 0
+  py="$HCAT_PYTHON"
+elif [ -x "${HOME:-}/.headroom-venv/bin/python" ]; then
+  py="$HOME/.headroom-venv/bin/python"
+fi
+if [ -n "$py" ]; then
+  [ -x "$py" ] || exit 0
+  # A half-created venv passes -x yet cannot `import headroom` (hcat exits 4)
+  # — verify the import and fail OPEN (allow the Read) on a broken engine.
+  # Only runs on the rare deny path, so the interpreter spawn is fine.
+  "$py" -c 'import headroom' >/dev/null 2>&1 || exit 0
+else
+  command -v headroom >/dev/null 2>&1 || exit 0
 fi
 
 sid=$(printf '%s' "$in" | jq -r '.session_id // "unknown"' 2>/dev/null) || sid="unknown"
@@ -68,7 +84,16 @@ if mkdir -p "$STATE_DIR" 2>/dev/null; then
 fi
 
 kb=$(( size / 1024 ))
-jq -cn --arg fp "$fp" --arg kb "$kb" \
+# Install-aware pointer: the plugin layout has hcat on Bash PATH; a legacy
+# sibling install does not, so cite the absolute path we actually resolved.
+if [ "$legacy" -eq 1 ]; then
+  hcat_cmd="$HCAT"
+  path_note=""
+else
+  hcat_cmd="hcat"
+  path_note=" (hcat is on PATH while this plugin is enabled)"
+fi
+jq -cn --arg fp "$fp" --arg kb "$kb" --arg hcat "$hcat_cmd" --arg note "$path_note" \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",
-    permissionDecisionReason:("🤖 hcat-gate: \($fp) is a \($kb) KB structured file. Run `hcat \"\($fp)\"` in Bash instead (hcat is on PATH while this plugin is enabled) — it prints a compressed rendering (raw bytes never enter context; Read the path with offset/limit later for exact details). To read it raw anyway, just Read it again — this gate only fires once per file.")}}' 2>/dev/null
+    permissionDecisionReason:("🤖 hcat-gate: \($fp) is a \($kb) KB structured file. Run `\($hcat) \"\($fp)\"` in Bash instead\($note) — it prints a compressed rendering (raw bytes never enter context; Read the path with offset/limit later for exact details). To read it raw anyway, just Read it again — this gate only fires once per file.")}}' 2>/dev/null
 exit 0
