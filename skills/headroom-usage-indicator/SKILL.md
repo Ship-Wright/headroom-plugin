@@ -1,6 +1,6 @@
 ---
 name: headroom-usage-indicator
-description: Use when you want a persistent visual reminder of whether the headroom MCP compression is actually being used this session — an always-visible status line that stays "idle" until headroom_compress is called, flips to "active" with the tokens AND money it saved (priced against the session's model), then decays back to idle after a quiet period. When idle, it also counts large tool results that were never compressed and shows them as an actionable nudge. Also shows an all-time money-saved total across sessions.
+description: Use when you want a persistent visual reminder of whether the headroom MCP compression is actually being used this session — an always-visible status line that stays "idle" until headroom_compress is called, flips to "active" with the tokens AND money it saved (priced against the session's model), then decays back to idle after a quiet period. When idle, it also counts large tool results that were never compressed and shows them as an actionable nudge. Also shows an all-time money-saved total across sessions. A companion PostToolUse hook ("Dangi") nudges Claude in real time when a big uncompressed output lands, with an optional macOS notification, and a 😴/🤖 mascot sits at the end of the badge.
 ---
 
 # Headroom Usage Indicator
@@ -12,6 +12,7 @@ The headroom MCP compresses large, structured tool outputs to save context — b
 - 🔴 `○ headroom idle (not compressing yet)` — until `headroom_compress` runs this session; becomes `○ headroom idle · 4 big blobs uncompressed` when large tool results are going uncompressed
 - 🟢 `● headroom · ~2.4k tok · $0.007 · 3× | $1.83 all-time` — for 60s after a compression
 - ⚪ `○ headroom idle · ~2.4k tok · $0.007 · 3× · 2 missed | $1.83 all-time` — after 60s of quiet (keeps the totals; ` · N missed` appears when more big results arrived than you've compressed)
+- 🤖 `😴 dangi` / `🤖 dangi: 3!` — the mascot at the right end of every badge: asleep when nothing is being missed, awake with the count when big results are going uncompressed. Its hook twin nudges Claude the moment such an output lands.
 
 **Core principle:** detect real usage from the session transcript, not from intent. It counts `tool_use` calls to `mcp__headroom__headroom_compress` and sums the `tokens_saved` those calls actually reported — so it can't lie. The dollar figure prices those tokens at the **session model's input rate** (a conservative floor — see below).
 
@@ -31,6 +32,7 @@ All logic lives in one shipped script, `scripts/statusline.sh` (in this plugin, 
 5. **Cache** — per-session results cached in `~/.claude/headroom-indicator/session-<id>.cache` keyed on transcript byte size; unchanged size skips the jq parse (a `stat` call instead of an O(transcript) parse every second). Cache format: `size|n|saved|last_ts|missed`.
 6. **Lifetime** — a session writes `session-<id>.totals` (`tokens usd`) only once it has actually saved tokens (sessions that never compress anything don't leave a file behind); if the session's model changes mid-session, the recorded usd is only ever raised, never lowered, by re-pricing at the new rate — a switch to a cheaper or unpriced model can't shrink what's already been credited. The badge sums existing totals files into `| $X all-time` once more than one session exists.
 7. **Decay** — timestamp of the last compress; within 60s → bright green, else dim (totals retained).
+8. **Dangi (real-time)** — a PostToolUse hook (`~/.claude/dangi-hook.sh`) inspects every tool result as it lands; when one is ≥ 4 KB and not from a headroom tool, it injects a one-line `additionalContext` nudge for Claude (at most once per 60 s per session) and shows a macOS notification (at most once per 300 s; skipped when `osascript` is absent or `DANGI_NO_NOTIFY` is set). The hook always exits 0 and prints nothing except the single JSON nudge. Note: Claude Code truncates very large outputs before hooks see them (per docs, ~10,000 chars with file-reference replacement), so a huge blob may evade the real-time ping — the transcript-based `missed` counter still catches it.
 
 ## Install
 
@@ -49,6 +51,11 @@ dest = pathlib.Path.home() / ".claude" / "headroom-statusline.sh"
 dest.parent.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(src, dest)
 dest.chmod(0o755)
+
+hook_src = PLUGIN_ROOT / "scripts" / "dangi-hook.sh"
+hook_dest = pathlib.Path.home() / ".claude" / "dangi-hook.sh"
+shutil.copyfile(hook_src, hook_dest)
+hook_dest.chmod(0o755)
 
 p = pathlib.Path.home() / ".claude" / "settings.json"
 data = json.loads(p.read_text()) if p.exists() else {}
@@ -71,14 +78,26 @@ else:
     cmd = HR
     mode = "installed (standalone)"
 data["statusLine"] = {"type": "command", "command": cmd, "refreshInterval": 1}
+
+HOOK_MARK = "dangi-hook.sh"
+hooks = data.get("hooks")
+hooks = data["hooks"] = hooks if isinstance(hooks, dict) else {}
+ptu = hooks.get("PostToolUse")
+ptu = hooks["PostToolUse"] = ptu if isinstance(ptu, list) else []
+if not any(HOOK_MARK in json.dumps(e) for e in ptu):
+    ptu.append({
+        "matcher": "*",
+        "hooks": [{"type": "command", "command": 'bash "' + str(hook_dest) + '"', "timeout": 10}],
+    })
+
 p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-print("headroom status line", mode)
+print("headroom status line", mode, "+ dangi hook registered")
 PY
 ```
 
 Upgrading from v1 is the same command: a v1 standalone one-liner (contains `OLD_MARK`) is replaced outright; a v1 merged install re-merges from the backup.
 
-**To restore** the user's original status line: copy `_headroomStatusLineBackup` back over `statusLine`, delete the backup key, and optionally remove `~/.claude/headroom-statusline.sh` and `~/.claude/headroom-indicator/`.
+**To restore** the user's original status line: copy `_headroomStatusLineBackup` back over `statusLine`, delete the backup key, and optionally remove `~/.claude/headroom-statusline.sh` and `~/.claude/headroom-indicator/`. Also remove the `hooks.PostToolUse` entry referencing `dangi-hook.sh`, and delete `~/.claude/dangi-hook.sh`.
 
 ## Verify Before Trusting It
 
@@ -111,6 +130,7 @@ rm -f /tmp/hr.jsonl
 | Clobbering an existing status line | Use the merge-aware installer; never blindly overwrite `statusLine`. |
 | A merged status line reading stdin twice | stdin is consumable once. The merged command does `in=$(cat)` first and feeds `$in` to both segments. |
 | Timestamp/size parsing breaking on one OS | The script ships GNU→BSD fallbacks for `date` and `stat` — keep both when editing. |
+| Adding `echo` / debug prints to `dangi-hook.sh` | Anything on stdout besides the single JSON object corrupts the hook output for every tool call. Debug to a file (`>> /tmp/dangi.log`) instead. |
 
 ## Reload Caveat
 
@@ -126,3 +146,4 @@ All knobs live in `scripts/statusline.sh` (edit, then re-run the installer):
 - **Colors:** `\033[32m` green (active), `\033[90m` dim (decayed), `\033[31m` red (never used).
 - **Different MCP tool:** change `TOOL=` (drop the `tokens_saved` sum if that tool doesn't report one).
 - **Nudge threshold:** `NUDGE_BYTES` (default 4096) — minimum tool-result size that counts as a missed compression opportunity. Raise it if code-file reads trigger false nags.
+- **Dangi cooldowns:** `NUDGE_COOLDOWN` (60 s between context nudges) and `NOTIFY_COOLDOWN` (300 s between notifications) in `dangi-hook.sh`; set `DANGI_NO_NOTIFY=1` in your environment to disable notifications entirely.

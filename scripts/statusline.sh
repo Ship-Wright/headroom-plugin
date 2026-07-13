@@ -152,3 +152,9 @@ else
     printf '\033[31m○ headroom idle (not compressing yet)\033[0m'
   fi
 fi
+
+if [ "$missed" -gt 0 ] 2>/dev/null; then
+  printf '  \033[33m🤖 dangi: %s!\033[0m' "$missed"
+else
+  printf '  \033[2m😴 dangi\033[0m'
+fi
