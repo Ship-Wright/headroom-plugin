@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# hcat — compress-at-the-source for the headroom-usage-indicator plugin.
+#
+# Prints a compressed rendering of a structured file (JSON/logs/CSV/...) so the
+# raw bytes never enter Claude's context. The original file on disk is the
+# source of truth: for exact details, Read the path in the header with an
+# offset/limit. Appends a "hcat" compression event to headroom's shared session
+# stats file so the statusline and headroom_stats count the savings.
+#
+# Exit codes: 0 ok · 2 usage/missing file · 3 headroom python not found
+#             4 compression failed
+#
+# Python resolution (first hit wins): $HCAT_PYTHON → sibling "python" of
+# `headroom` on PATH → ~/.headroom-venv/bin/python.
+
+set -u
+
+if [ $# -ne 1 ] || [ -z "${1:-}" ]; then
+  echo "usage: hcat <file>" >&2
+  exit 2
+fi
+FILE=$1
+if [ ! -f "$FILE" ] || [ ! -r "$FILE" ]; then
+  echo "hcat: cannot read file: $FILE" >&2
+  exit 2
+fi
+
+PY=""
+if [ -n "${HCAT_PYTHON:-}" ]; then
+  PY=$HCAT_PYTHON            # explicit override is authoritative — no fallback
+else
+  for cand in "$(dirname "$(command -v headroom 2>/dev/null || echo /nonexistent)")/python" "$HOME/.headroom-venv/bin/python"; do
+    if [ -x "$cand" ]; then PY=$cand; break; fi
+  done
+fi
+if [ -z "$PY" ] || [ ! -x "$PY" ]; then
+  echo "hcat: headroom python not found (install headroom, or set HCAT_PYTHON)" >&2
+  exit 3
+fi
+
+HF_HUB_OFFLINE=1 HEADROOM_UPDATE_CHECK=off exec "$PY" - "$FILE" <<'PYEOF'
+import json, os, sys, time
+
+path = os.path.abspath(sys.argv[1])
+try:
+    with open(path, encoding="utf-8", errors="replace") as f:
+        raw = f.read()
+except OSError as e:
+    print(f"hcat: cannot read file: {e}", file=sys.stderr)
+    sys.exit(2)
+
+lines = raw.count("\n") + (0 if raw.endswith("\n") or not raw else 1)
+kb = len(raw.encode("utf-8", "replace")) / 1024
+
+try:
+    from headroom.compress import compress
+    result = compress([{"role": "tool", "content": raw}])
+except Exception as e:
+    print(f"hcat: compression failed: {e}", file=sys.stderr)
+    sys.exit(4)
+
+out = result.messages[0].get("content", raw)
+if not isinstance(out, str):
+    out = json.dumps(out)
+
+before, after = result.tokens_before, result.tokens_after
+saved_pct = round((1 - after / before) * 100, 1) if before else 0.0
+
+# Passthrough when compression buys <5%: schema noise isn't worth it.
+if before == 0 or saved_pct < 5:
+    print(f"── hcat: {path} · {lines} lines · {kb:.1f} KB · passthrough "
+          f"(compression would save {saved_pct}%)")
+    print(raw, end="" if raw.endswith("\n") else "\n")
+    sys.exit(0)
+
+print(f"── hcat: {path} · {lines} lines · {kb:.1f} KB · "
+      f"~{before} tok → ~{after} tok ({saved_pct}% saved) · "
+      f"original on disk — Read that path (offset/limit) for exact details")
+print(out, end="" if out.endswith("\n") else "\n")
+
+# Report savings into headroom's shared session stats (best effort, never fatal).
+try:
+    from headroom import paths as _paths
+    stats_dir = _paths.workspace_dir()
+    stats_file = _paths.session_stats_path()
+    stats_dir.mkdir(parents=True, exist_ok=True)
+    event = {
+        "type": "compress",
+        "input_tokens": before,
+        "output_tokens": after,
+        "savings_percent": saved_pct,
+        "strategy": "hcat",
+        "timestamp": time.time(),
+        "pid": os.getpid(),
+    }
+    line = json.dumps(event, separators=(",", ":")) + "\n"
+    import fcntl
+    with open(stats_file, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(line)
+        fcntl.flock(f, fcntl.LOCK_UN)
+except Exception:
+    pass
+PYEOF

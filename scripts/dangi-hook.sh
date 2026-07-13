@@ -21,6 +21,8 @@ tool=$(printf '%s' "$in" | jq -r '.tool_name // empty' 2>/dev/null) || exit 0
 tool=$(printf '%s' "$tool" | tr -cd 'A-Za-z0-9_.-')   # defensive: tool name feeds JSON + AppleScript
 [ -n "$tool" ] || exit 0
 case "$tool" in "$HPREFIX"*) exit 0 ;; esac
+# Edits/writes echo the code being changed — never compression targets.
+case "$tool" in Edit|Write|MultiEdit|NotebookEdit) exit 0 ;; esac
 
 size=$(printf '%s' "$in" | jq -r '.tool_response // "" | tostring | length' 2>/dev/null) || exit 0
 case "$size" in (*[!0-9]*|"") exit 0 ;; esac
@@ -56,6 +58,6 @@ if mkdir -p "$STATE_DIR" 2>/dev/null; then
 fi
 
 if [ "$nudge" -eq 1 ]; then
-  printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"🤖 Dangi: that %s output was ~%s KB and was not compressed — if it is structured/repetitive, consider mcp__headroom__headroom_compress to save context."}}' "$tool" "$kb"
+  printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"🤖 Dangi: that %s output was ~%s KB and was not compressed. If it came from a file on disk, run hcat <path> (in ~/.claude) via Bash next time — raw bytes never enter context. If it is not file-backed but structured/repetitive, use mcp__headroom__headroom_compress, or read+compress it inside a disposable subagent that returns only the compressed text."}}' "$tool" "$kb"
 fi
 exit 0

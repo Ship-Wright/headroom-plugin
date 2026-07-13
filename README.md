@@ -52,7 +52,18 @@ Dangi is the plugin's real-time detector. The badge tells you what you missed; D
 - if it keeps happening, you get a macOS notification (max once per 5 minutes);
 - and he lives at the end of your status line: `😴 dangi` when all is well, `🤖 dangi: 3!` when compression chances are slipping by.
 
-Installed automatically as a Claude Code PostToolUse hook by the same installer. Set `DANGI_NO_NOTIFY=1` to silence the notifications.
+Installed automatically as a Claude Code PostToolUse hook by the same installer. Set `DANGI_NO_NOTIFY=1` to silence the notifications. Dangi ignores edit tools (`Edit`/`Write`) — those echo code you're changing, which is never a compression target.
+
+## hcat: stop the tokens *before* they're spent (v2.3) 🚰
+
+The badge and Dangi are honest, but they share a limit: by the time Claude *could* call `headroom_compress`, the big output is already in context — those tokens are spent, and re-sending the blob to the compressor costs output tokens on top. `headroom_compress` genuinely pays off inside subagents (compress before returning), but in the main session it's mostly consolation.
+
+v2.3 adds the **prevention layer**:
+
+- **`hcat <file>`** (`~/.claude/hcat`) compresses a structured file through headroom's local pipeline **before it ever enters context** — you get a compact schema+rows rendering (typically 70 %+ token reduction on JSON) plus a header citing the original path. Need an exact detail later? `Read` the original with an offset/limit — the file on disk is the source of truth. Savings are reported into `headroom_stats`.
+- **The hcat gate** (`~/.claude/hcat-gate.sh`, a PreToolUse hook on `Read`) catches Claude *about to* raw-read a big (≥ 16 KB) `.json/.jsonl/.ndjson/.csv/.tsv/.log` file and redirects it to `hcat` — **once per file per session**; re-reading the same file passes, so it's a redirect, never a wall. If headroom isn't installed the gate stays silent. Kill switch: `HCAT_GATE_OFF=1`.
+
+Both are installed and registered by the same installer as everything else.
 
 ---
 
@@ -90,7 +101,7 @@ Then ask Claude once more: *"set up the headroom usage indicator"* — this refr
 
 ## Uninstall
 
-Remove the `"statusLine"` block from `~/.claude/settings.json` (or ask Claude to "remove the headroom status line"), then `/plugin uninstall headroom-usage-indicator@headroom-tools`. Also remove `~/.claude/headroom-statusline.sh` and `~/.claude/headroom-indicator/`, plus the `hooks.PostToolUse` entry referencing `dangi-hook.sh` and `~/.claude/dangi-hook.sh`.
+Remove the `"statusLine"` block from `~/.claude/settings.json` (or ask Claude to "remove the headroom status line"), then `/plugin uninstall headroom-usage-indicator@headroom-tools`. Also remove `~/.claude/headroom-statusline.sh` and `~/.claude/headroom-indicator/`, plus the `hooks.PostToolUse` entry referencing `dangi-hook.sh`, the `hooks.PreToolUse` entry referencing `hcat-gate.sh`, and the files `~/.claude/dangi-hook.sh`, `~/.claude/hcat-gate.sh`, `~/.claude/hcat`.
 
 ---
 
