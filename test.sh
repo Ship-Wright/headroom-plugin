@@ -1185,6 +1185,67 @@ check "f8: .mcp.json command quoted like hooks.json" \
       '"${CLAUDE_PLUGIN_ROOT}"/scripts/mcp-launcher.sh' \
       "$(jq -r '.mcpServers.headroom.command' "$MCP_JSON")"
 
+# --- 36. data-driven price table (data/model-prices.json)
+PRICES_JSON="$ROOT/data/model-prices.json"
+if jq -e '(.prices|type)=="array" and (.prices|length)>0' "$PRICES_JSON" >/dev/null 2>&1; then
+  echo "ok - prices: bundled model-prices.json parses"; PASS=$((PASS+1))
+else
+  echo "FAIL - prices: bundled model-prices.json parses"; FAIL=$((FAIL+1))
+fi
+check "prices: opus-4-8 present in table" "opus-4-8" "$(cat "$PRICES_JSON")"
+check "prices: fable-5 present in table"  "fable-5"  "$(cat "$PRICES_JSON")"
+
+export HEADROOM_STATE_DIR="$TMP/state-prices"
+# a NEW model present only in the JSON is priced — proving pricing is data, not code
+PF="$TMP/prices-custom.json"
+jq -n '{version:1, prices:[{match:"zeta-9", usd_per_mtok:8}]}' > "$PF"
+out=$(HEADROOM_PRICES_FILE="$PF" badge "$TMP/t_active.jsonl" claude-zeta-9 sess-px1)  # 500 tok @ $8 = 0.40¢
+check "prices: model from JSON is priced (data-driven)" "0.40¢" "$out"
+# a model absent from an authoritative JSON is unknown → tokens-only, never a guess.
+# Fresh state dir so an earlier session's all-time totals can't leak a ¢ in.
+export HEADROOM_STATE_DIR="$TMP/state-prices-px2"
+out=$(HEADROOM_PRICES_FILE="$PF" badge "$TMP/t_active.jsonl" some-absent-model sess-px2)
+check "prices: unlisted model is tokens-only" "~500 tok" "$out"
+check_absent "prices: unlisted model shows no cents" "¢" "$out"
+# invalid or missing price file → built-in table still prices (zero-regression fallback)
+printf 'not json{' > "$TMP/prices-bad.json"
+out=$(HEADROOM_PRICES_FILE="$TMP/prices-bad.json" badge "$TMP/t_active.jsonl" claude-opus-4-8 sess-px3)
+check "prices: invalid file falls back to built-in table" "0.25¢" "$out"
+out=$(HEADROOM_PRICES_FILE="$TMP/does-not-exist.json" badge "$TMP/t_active.jsonl" claude-opus-4-8 sess-px4)
+check "prices: missing file falls back to built-in table" "0.25¢" "$out"
+
+# --- 37. dangi: file-aware nudge + batched suppression count
+export HEADROOM_STATE_DIR="$TMP/state-dangi2"
+
+# names the exact structured file drawn from the Bash command
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"faware-1",
+  tool_input:{command:"cat /var/data/events.json"}, tool_response:("x"*9000)}' | bash "$DANGI")
+check "dangi file-aware: nudge names the file" 'hcat \"/var/data/events.json\"' "$out"
+# no command → generic <path> placeholder preserved (unchanged behavior)
+out=$(hook_input Bash 9000 faware-2 | bash "$DANGI")
+check "dangi file-aware: generic path when no command" 'hcat \"<path>\"' "$out"
+# a command with no structured-file token → generic placeholder, no bad guess
+out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"faware-3",
+  tool_input:{command:"echo hello world"}, tool_response:("x"*9000)}' | bash "$DANGI")
+check "dangi file-aware: generic when no file token" 'hcat \"<path>\"' "$out"
+
+# batching: big blobs suppressed during the cooldown are counted and surfaced on
+# the next nudge. DANGI_NOW drives the cooldown clock deterministically.
+padB=$(head -c 9000 /dev/zero | tr '\0' x)
+fire() {  # fire <simulated-now> — one big Bash blob at that clock time
+  jq -n --arg pad "$padB" \
+    '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"batch-1", tool_response:$pad}' \
+    | DANGI_NOW="$1" bash "$DANGI"
+}
+o1=$(fire 100000)   # first: nudges, pending resets
+check "dangi batch: first output nudges"        "additionalContext" "$o1"
+check_absent "dangi batch: first has no count"  "slipped by"        "$o1"
+o2=$(fire 100010); check_absent "dangi batch: second suppressed" "additionalContext" "$o2"
+o3=$(fire 100020); check_absent "dangi batch: third suppressed"  "additionalContext" "$o3"
+o4=$(fire 100100)   # >cooldown since last nudge: nudges again, names the 2 missed
+check "dangi batch: nudges again after cooldown"    "additionalContext"     "$o4"
+check "dangi batch: surfaces the suppressed count"  "2 more large outputs"  "$o4"
+
 # --- shellcheck (when available) — warning severity: info-level findings
 # (e.g. SC2016 on intentionally-literal single quotes) don't fail the suite
 if command -v shellcheck >/dev/null 2>&1; then

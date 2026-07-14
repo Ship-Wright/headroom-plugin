@@ -49,7 +49,8 @@ case "$size" in (*[!0-9]*|"") exit 0 ;; esac
 
 sid=$(printf '%s' "$in" | jq -r '.session_id // "unknown"' 2>/dev/null) || sid="unknown"
 [ -n "$sid" ] || sid="unknown"
-now=$(date +%s)
+now=${DANGI_NOW:-$(date +%s)}   # DANGI_NOW is a test seam for the cooldown clock
+case "$now" in (*[!0-9]*|"") now=$(date +%s) ;; esac
 kb=$(( size / 1024 ))
 
 # Best-effort lock so parallel tool batches don't double-nudge (macOS has no
@@ -70,12 +71,14 @@ if mkdir -p "$STATE_DIR" 2>/dev/null; then
 fi
 
 state="$STATE_DIR/session-$sid.dangi"
-last_nudge=0; last_notify=0
+last_nudge=0; last_notify=0; pending=0
 if [ -f "$state" ]; then
-  { read -r last_nudge last_notify < "$state"; } 2>/dev/null || true
+  # 3rd field (pending) may be absent in state files written by older versions.
+  { read -r last_nudge last_notify pending < "$state"; } 2>/dev/null || true
 fi
 case "$last_nudge" in (*[!0-9]*|"") last_nudge=0 ;; esac
 case "$last_notify" in (*[!0-9]*|"") last_notify=0 ;; esac
+case "$pending" in (*[!0-9]*|"") pending=0 ;; esac
 
 # Fire-and-forget desktop notification: osascript on macOS, notify-send on
 # Linux. Backgrounded — a hook must never wait on a notification daemon.
@@ -90,18 +93,37 @@ if [ -z "${DANGI_NO_NOTIFY:-}" ] && [ $(( now - last_notify )) -ge "$NOTIFY_COOL
   fi
 fi
 
-nudge=0
+# Rate-limit the context nudge, but count the big blobs that slipped by while
+# quiet so the next nudge can say how many were missed (batched, not one-per).
+nudge=0; batched=0
 if [ $(( now - last_nudge )) -ge "$NUDGE_COOLDOWN" ]; then
   nudge=1
   last_nudge=$now
+  batched=$pending      # surface how many were suppressed since the last nudge
+  pending=0
+else
+  pending=$(( pending + 1 ))
 fi
 
 if mkdir -p "$STATE_DIR" 2>/dev/null; then
-  { printf '%s %s\n' "$last_nudge" "$last_notify" > "$state"; } 2>/dev/null || true
+  { printf '%s %s %s\n' "$last_nudge" "$last_notify" "$pending" > "$state"; } 2>/dev/null || true
 fi
 [ "$locked" -eq 1 ] && rmdir "$lock" 2>/dev/null
 
 if [ "$nudge" -eq 1 ]; then
-  printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"🤖 Dangi: that %s output was ~%s KB and was not compressed. If it came from a file on disk, run hcat \\"<path>\\" via Bash next time (plugin installs have it on PATH; legacy installs use ~/.claude/hcat) — raw bytes never enter context. If it is not file-backed but structured/repetitive, use mcp__headroom__headroom_compress, or read+compress it inside a disposable subagent that returns only the compressed text."}}' "$tool" "$kb"
+  # File-aware: when the Bash command names a structured file, point hcat at it
+  # by name instead of a generic <path>. High precision — only a bare token
+  # ending in a structured extension (never quotes/spaces/backslashes, so it is
+  # always JSON-safe here). Otherwise the generic placeholder is kept.
+  target="<path>"
+  if [ "$tool" = "Bash" ]; then
+    f=$(printf '%s' "${cmd:-}" \
+        | grep -oE "[^[:space:]\"'\\\\]+\\.(json|jsonl|ndjson|csv|tsv|log)" | tail -1)
+    [ -n "$f" ] && target="$f"
+  fi
+  batch_note=""
+  [ "$batched" -gt 0 ] 2>/dev/null \
+    && batch_note=" (+$batched more large outputs slipped by while I was quiet)"
+  printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"🤖 Dangi: that %s output was ~%s KB and was not compressed.%s If it came from a file on disk, run hcat \\"%s\\" via Bash next time (plugin installs have it on PATH; legacy installs use ~/.claude/hcat) — raw bytes never enter context. If it is not file-backed but structured/repetitive, use mcp__headroom__headroom_compress, or read+compress it inside a disposable subagent that returns only the compressed text."}}' "$tool" "$kb" "$batch_note" "$target"
 fi
 exit 0

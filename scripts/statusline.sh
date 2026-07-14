@@ -9,6 +9,7 @@ TOOL="mcp__headroom__headroom_compress"
 # HOME can be unset in hook/statusline environments (set -u would kill us);
 # degrade to a temp-dir state location rather than dying on every render.
 STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
+SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)
 NUDGE_BYTES=4096            # tool results at least this large count as compression candidates
 HPREFIX="mcp__headroom__"   # results of headroom's own tools are never "missed"
 
@@ -29,7 +30,31 @@ fmt_tok() {  # 2400 -> "2.4k", 500 -> "500"
   fi
 }
 
+# Data-driven price table: adding a model is a data edit in data/model-prices.json,
+# not a code change. Resolve it next to the running script (a copied install gets
+# headroom-model-prices.json beside the copy) or in the plugin's data/ dir. When
+# it's present and parses, it is authoritative (first substring match wins; no
+# match = unknown). When it's absent or invalid, the built-in table below keeps
+# the badge working with zero regression (and offline — the file is never fetched).
+PRICES_FILE=""
+for _pf in "${HEADROOM_PRICES_FILE:-}" \
+           "$SELF_DIR/headroom-model-prices.json" \
+           "$SELF_DIR/../data/model-prices.json"; do
+  if [ -n "$_pf" ] && [ -f "$_pf" ]; then PRICES_FILE="$_pf"; break; fi
+done
+if [ -n "$PRICES_FILE" ] && ! jq -e . "$PRICES_FILE" >/dev/null 2>&1; then
+  PRICES_FILE=""   # invalid JSON → fall back to the built-in table
+fi
+
 price_per_mtok() {  # input $/MTok by model-id substring; empty = unknown
+  if [ -n "$PRICES_FILE" ]; then
+    jq -r --arg m "$1" \
+      'first((.prices // [])[]
+             | (.match // "") as $x
+             | select(($x | length) > 0 and ($m | contains($x)))
+             | .usd_per_mtok) // ""' "$PRICES_FILE" 2>/dev/null
+    return
+  fi
   case "$1" in
     *fable-5*|*mythos*)                           echo 10 ;;
     *opus-4-8*|*opus-4-7*|*opus-4-6*|*opus-4-5*)  echo 5 ;;

@@ -12,7 +12,9 @@ headroom engine python (`$HCAT_PYTHON` → sibling of `headroom` on PATH → the
 `headroom` console script's shebang interpreter, which covers pip --user and
 pipx layouts → `~/.headroom-venv`), a real `bin/hcat` smoke compression of a
 generated ~26 KB JSON, the plugin-native `hooks/hooks.json`, the bundled
-`.mcp.json` (parses and its launcher is executable), that
+`.mcp.json` (parses and its launcher is executable), the bundled
+`data/model-prices.json` badge price table (parses; `--fix` copies it beside the
+statusline copy), that
 `~/.claude/settings.json` is a single valid JSON document, legacy pre-plugin
 hook entries still registered in `~/.claude/settings.json` or
 `~/.claude/settings.local.json` (they double-fire alongside the plugin-native

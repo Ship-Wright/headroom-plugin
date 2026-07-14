@@ -33,8 +33,9 @@ You should see, in order:
 
 If any of those three don't happen, ask Claude to **run the headroom doctor** — diagnosing exactly this is its whole job.
 
-<!-- DEMO-GIF: docs/demo-badge.gif — screen capture of the badge flipping red → green as an hcat receipt lands. Replace this comment with the image when recorded. -->
-*(A short demo GIF of the badge flipping green will live here.)*
+![The headroom badge cycling through its three states: red idle with uncompressed blobs, green active after an hcat receipt, grey decayed keeping the tally](docs/demo-badge.gif)
+
+*The badge across its three real states — red idle (big files read raw), green active (an hcat receipt just landed: tokens and $ saved), grey decayed (quiet 60s, keeps the tally and flags what was missed).*
 
 ---
 
@@ -61,7 +62,7 @@ Every second, it looks at what your Claude session has actually done and updates
 
 ## How the money number works
 
-The badge prices the tokens headroom saved at the **input rate of the model your session is running** (e.g. $5/MTok on Opus, $10/MTok on Fable). If the model isn't in the built-in price table, the badge just shows tokens — it never guesses a dollar figure. `all-time` is the sum across all your sessions on this machine (stored in `~/.claude/headroom-indicator/`).
+The badge prices the tokens headroom saved at the **input rate of the model your session is running** (e.g. $5/MTok on Opus, $10/MTok on Fable). The price table is **data, not code** (v2.6): it lives in `data/model-prices.json` (matched by model-id substring, first match wins), so adding a model is a one-line edit shipped with the plugin — no script change. If the model isn't in the table, the badge just shows tokens — it never guesses a dollar figure. `all-time` is the sum across all your sessions on this machine (stored in `~/.claude/headroom-indicator/`).
 
 This is a deliberately **conservative floor**: compressed content would otherwise re-enter the context on every later API turn (mostly at the cheaper cache-read rate), so the true savings compound above the number shown.
 
@@ -73,7 +74,8 @@ Any tool result of 4 KB or more that wasn't produced by headroom itself. Each co
 
 Dangi is the plugin's real-time detector. The badge tells you what you missed; Dangi catches it **as it happens**:
 
-- the moment a tool spits out ≥ 4 KB that isn't compressed, Dangi whispers to Claude (an in-context nudge, max once a minute) so it can compress right away;
+- the moment a tool spits out ≥ 4 KB that isn't compressed, Dangi whispers to Claude (an in-context nudge, max once a minute) so it can compress right away — and when it can tell which file the output came from (a `cat`/`head` of a `.json/.csv/.log/…`), the nudge **names that file** so the fix is copy-paste (`hcat "<that file>"`), v2.6;
+- because the nudge is rate-limited, blobs that slip by while Dangi is quiet aren't lost — the next nudge **says how many were missed** in the gap, so batching never hides the backlog (v2.6);
 - if it keeps happening, you get a desktop notification — via `osascript` on macOS, falling back to `notify-send` on Linux (max once per 5 minutes);
 - and he lives at the end of your status line: `😴 dangi` when all is well, `🤖 dangi: 3!` when compression chances are slipping by.
 
@@ -192,7 +194,8 @@ Do **not** run the legacy installer if the plugin is installed — you'd registe
 - `skills/doctor/SKILL.md` — the doctor: checks `jq`, the engine, the MCP, the hooks, and the status line; fixes what you consent to, including legacy-install cleanup.
 - `hooks/hooks.json` — plugin-native registration for Dangi (PostToolUse) and the hcat gate (PreToolUse).
 - `bin/hcat` — compress-at-the-source, on Claude's PATH while the plugin is enabled.
-- `scripts/` — `statusline.sh`, `dangi-hook.sh`, `hcat-gate.sh` (the working parts).
+- `scripts/` — `statusline.sh`, `dangi-hook.sh`, `hcat-gate.sh`, `doctor.sh`, `mcp-launcher.sh` (the working parts).
+- `data/model-prices.json` — the badge's price table as data; adding a model is an edit here, not a code change.
 - `.mcp.json` — bundled headroom MCP server definition (the launcher finds your engine).
 - `test.sh` — the synthetic-transcript test suite; run it from the repo root.
 
