@@ -11,7 +11,7 @@ description: Use when the headroom setup needs a health check or repair — the 
 headroom engine python (`$HCAT_PYTHON` → sibling of `headroom` on PATH → the
 `headroom` console script's shebang interpreter, which covers pip --user and
 pipx layouts → `~/.headroom-venv`), a real `bin/hcat` smoke compression of a
-generated ~20 KB JSON, the plugin-native `hooks/hooks.json`, the bundled
+generated ~26 KB JSON, the plugin-native `hooks/hooks.json`, the bundled
 `.mcp.json` (parses and its launcher is executable), that
 `~/.claude/settings.json` is a single valid JSON document, legacy pre-plugin
 hook entries still registered in `~/.claude/settings.json` or

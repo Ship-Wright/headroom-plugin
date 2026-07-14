@@ -32,6 +32,17 @@ check_absent() {  # check_absent <name> <forbidden-substring> <actual>
   fi
 }
 
+check_eq() {  # check_eq <name> <expected> <actual> — exact match (exit codes, counts)
+  if [ "$2" = "$3" ]; then
+    echo "ok - $1"; PASS=$((PASS+1))
+  else
+    echo "FAIL - $1"
+    echo "    expected exactly: $2"
+    echo "    got: $3"
+    FAIL=$((FAIL+1))
+  fi
+}
+
 badge() {  # badge <transcript> <model-id> <session-id> — run the script as Claude Code would
   printf '{"transcript_path":"%s","model":{"id":"%s"},"session_id":"%s"}' "$1" "$2" "$3" \
     | bash "$SCRIPT"
@@ -188,7 +199,7 @@ printf '%s|9|9999|2020-01-01T00:00:00.000Z\n' "$sz" > "$HEADROOM_STATE_DIR/sessi
 out=$(badge "$TMP/t_upg.jsonl" claude-opus-4-8 sess-n7)
 check "cache upgrade: stale 4-field line recomputed" "1 big blob uncompressed" "$out"
 fields=$(awk -F'|' '{print NF; exit}' "$HEADROOM_STATE_DIR/session-sess-n7.cache")
-check "cache upgrade: rewritten with 5 fields" "5" "$fields"
+check_eq "cache upgrade: rewritten with 5 fields" "5" "$fields"
 
 # 16. string-form tool_result content is measured too (the dominant shape in real transcripts)
 strpad=$(printf 'x%.0s' $(seq 1 4096))
@@ -212,7 +223,7 @@ hook_input() {  # hook_input <tool-name> <char-count> <session-id> — synthetic
 out=$(hook_input Bash 4096 dangi-s1 | bash "$DANGI"); rc=$?
 check "dangi: nudges on big output"   "additionalContext" "$out"
 check "dangi: message names itself"   "Dangi"             "$out"
-check "dangi: exit code"              "0"                  "$rc"
+check_eq "dangi: exit code"              "0"                  "$rc"
 printf '%s' "$out" | jq -e '.hookSpecificOutput.hookEventName == "PostToolUse"' >/dev/null \
   && check "dangi: valid hook JSON" "ok" "ok" \
   || check "dangi: valid hook JSON" "ok" "INVALID"
@@ -285,13 +296,13 @@ check "dangi: notification names the tool" "Bash" "$(cat "$TMP/osascript.calls" 
 mkdir -p "$HEADROOM_STATE_DIR/.lock-dangi-s12" 2>/dev/null
 out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"dangi-s12",
   tool_response:("x"*9000)}' | bash "$DANGI"); rc=$?
-check "dangi: stale lock tolerated (exit 0)" "0" "$rc"
+check_eq "dangi: stale lock tolerated (exit 0)" "0" "$rc"
 check "dangi: stale lock still nudges" "additionalContext" "$out"
 out=$(hook_input mcp__headroom__headroom_compress 9000 dangi-s4 | bash "$DANGI")
 check_absent "dangi: headroom tools excluded" "additionalContext" "$out"
 out=$(printf 'not json at all' | bash "$DANGI"); rc=$?
 check_absent "dangi: garbage stdin silent" "additionalContext" "$out"
-check "dangi: garbage stdin exit 0" "0" "$rc"
+check_eq "dangi: garbage stdin exit 0" "0" "$rc"
 
 # 20. stderr purity: an unreadable state file must not leak bash diagnostics
 hook_input Bash 5000 dangi-s5 | bash "$DANGI" >/dev/null 2>/dev/null   # first call creates the state file
@@ -325,14 +336,14 @@ done
 # 22. arg validation runs before python resolution — testable everywhere
 out=$(bash "$HCAT" 2>&1); rc=$?
 check "hcat: no args → usage" "usage" "$out"
-check "hcat: no args → exit 2" "2" "$rc"
+check_eq "hcat: no args → exit 2" "2" "$rc"
 out=$(bash "$HCAT" "$TMP/does-not-exist.json" 2>&1); rc=$?
-check "hcat: missing file → exit 2" "2" "$rc"
+check_eq "hcat: missing file → exit 2" "2" "$rc"
 
 # 23. unusable python → distinct exit 3, nothing on stdout
 printf '{"k":1}' > "$TMP/hc_small.json"
 out=$(HCAT_PYTHON=/nonexistent/python bash "$HCAT" "$TMP/hc_small.json" 2>/dev/null); rc=$?
-check "hcat: no headroom → exit 3" "3" "$rc"
+check_eq "hcat: no headroom → exit 3" "3" "$rc"
 check_absent "hcat: no headroom → stdout empty" "{" "$out"
 
 if [ -n "$HEADROOM_PY" ]; then
@@ -343,7 +354,7 @@ rows = [{"id": i, "user": f"user_{i%50}", "event": "click", "ts": 1700000000+i, 
 open(sys.argv[1], "w").write(json.dumps(rows, indent=2))
 PYEOF
   out=$(HEADROOM_WORKSPACE_DIR="$TMP/hc_ws" bash "$HCAT" "$TMP/hc_big.json"); rc=$?
-  check "hcat: exit 0 on success" "0" "$rc"
+  check_eq "hcat: exit 0 on success" "0" "$rc"
   check "hcat: header cites source path" "$TMP/hc_big.json" "$out"
   check "hcat: header shows savings" "% saved" "$out"
   raw_bytes=$(wc -c < "$TMP/hc_big.json")
@@ -375,13 +386,13 @@ gate_input() {  # gate_input <file-path> <session-id> — synthetic PreToolUse s
 # 26. small / non-structured / garbage → silent allow, exit 0
 out=$(gate_input "$TMP/hc_small.json" gate-s1 | bash "$GATE"); rc=$?
 check_absent "gate: small file allowed" "deny" "$out"
-check "gate: small file exit 0" "0" "$rc"
+check_eq "gate: small file exit 0" "0" "$rc"
 head -c 20000 /dev/zero | tr '\0' 'x' > "$TMP/hc_big.dart"
 out=$(gate_input "$TMP/hc_big.dart" gate-s1 | bash "$GATE")
 check_absent "gate: non-structured ext allowed" "deny" "$out"
 out=$(printf 'not json' | bash "$GATE"); rc=$?
 check_absent "gate: garbage stdin silent" "deny" "$out"
-check "gate: garbage stdin exit 0" "0" "$rc"
+check_eq "gate: garbage stdin exit 0" "0" "$rc"
 
 if [ -n "$HEADROOM_PY" ]; then
   # 27. big structured file → deny once with hcat guidance...
@@ -481,8 +492,8 @@ else
 fi
 check "hooks.json: exactly the two event arrays" "PostToolUse,PreToolUse" \
   "$(jq -r '.hooks | keys | sort | join(",")' "$HOOKS_JSON" 2>/dev/null)"
-check "hooks.json: single PreToolUse entry"  "1" "$(jq -r '.hooks.PreToolUse  | length' "$HOOKS_JSON" 2>/dev/null)"
-check "hooks.json: single PostToolUse entry" "1" "$(jq -r '.hooks.PostToolUse | length' "$HOOKS_JSON" 2>/dev/null)"
+check_eq "hooks.json: single PreToolUse entry"  "1" "$(jq -r '.hooks.PreToolUse  | length' "$HOOKS_JSON" 2>/dev/null)"
+check_eq "hooks.json: single PostToolUse entry" "1" "$(jq -r '.hooks.PostToolUse | length' "$HOOKS_JSON" 2>/dev/null)"
 check "hooks.json: PreToolUse matcher"  "Read|Bash" "$(jq -r '.hooks.PreToolUse[0].matcher'  "$HOOKS_JSON" 2>/dev/null)"
 check "hooks.json: PostToolUse matcher" "*"         "$(jq -r '.hooks.PostToolUse[0].matcher' "$HOOKS_JSON" 2>/dev/null)"
 
@@ -504,7 +515,7 @@ fi
 # paths): substitute CLAUDE_PLUGIN_ROOT=$ROOT and run via sh -c.
 out=$(hook_input Bash 9000 plugnat-d1 | CLAUDE_PLUGIN_ROOT="$ROOT" sh -c "$dangi_cmd"); rc=$?
 check "plugin-native dangi: nudges via hooks.json command" "additionalContext" "$out"
-check "plugin-native dangi: exit 0" "0" "$rc"
+check_eq "plugin-native dangi: exit 0" "0" "$rc"
 check "dangi nudge: plain hcat form (on PATH)" 'hcat \"<path>\"' "$out"
 check "dangi nudge: says plugin installs have it on PATH" "plugin installs have it on PATH" "$out"
 check "dangi nudge: names legacy fallback" "~/.claude/hcat" "$out"
@@ -513,7 +524,7 @@ check_absent "dangi nudge: no plugin-internal path" "bin/hcat" "$out"
 if [ -n "$HEADROOM_PY" ]; then
   out=$(gate_input "$TMP/hc_big.json" plugnat-g1 | CLAUDE_PLUGIN_ROOT="$ROOT" sh -c "$gate_cmd"); rc=$?
   check "plugin-native gate: denies big json via hooks.json command" '"permissionDecision":"deny"' "$out"
-  check "plugin-native gate: exit 0" "0" "$rc"
+  check_eq "plugin-native gate: exit 0" "0" "$rc"
   check "gate deny: plain hcat form" 'Run `hcat \"' "$out"
   check_absent "gate deny: no scripts/hcat path" "scripts/hcat" "$out"
   check_absent "gate deny: no bin/hcat path" "bin/hcat" "$out"
@@ -556,7 +567,7 @@ ns_count() { wc -l < "$TMP/notifysend.calls" 2>/dev/null | tr -d ' '; }
 out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"port-s1",
   tool_response:("x"*9000)}' | env -u DANGI_NO_NOTIFY PATH="$LINBIN" /bin/bash "$DANGI"); rc=$?
 check "portability: linux env still nudges" "additionalContext" "$out"
-check "portability: linux env exit 0" "0" "$rc"
+check_eq "portability: linux env exit 0" "0" "$rc"
 for _ in 1 2 3 4 5 6 7 8 9 10; do   # notify-send fires in the background — poll up to 2s
   [ -s "$TMP/notifysend.calls" ] && break
   sleep 0.2
@@ -568,13 +579,13 @@ check "portability: notify-send carries the message" "KB Bash output" "$(cat "$T
 jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"port-s1",
   tool_response:("x"*9000)}' | env -u DANGI_NO_NOTIFY PATH="$LINBIN" /bin/bash "$DANGI" > /dev/null
 sleep 0.5
-check "portability: notify-send cooldown per session" "1" "$(ns_count)"
+check_eq "portability: notify-send cooldown per session" "1" "$(ns_count)"
 
 # DANGI_NO_NOTIFY kill switch silences notify-send as well
 jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"port-s2",
   tool_response:("x"*9000)}' | env DANGI_NO_NOTIFY=1 PATH="$LINBIN" /bin/bash "$DANGI" > /dev/null
 sleep 0.5
-check "portability: DANGI_NO_NOTIFY silences notify-send" "1" "$(ns_count)"
+check_eq "portability: DANGI_NO_NOTIFY silences notify-send" "1" "$(ns_count)"
 
 # when both notifiers are present, osascript is preferred (macOS look stays native)
 osa_pre=$(wc -l < "$TMP/osascript.calls" | tr -d ' ')
@@ -584,8 +595,8 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ "$(wc -l < "$TMP/osascript.calls" | tr -d ' ')" -gt "$osa_pre" ] && break
   sleep 0.2
 done
-check "portability: osascript preferred when both exist" "$((osa_pre + 1))" "$(wc -l < "$TMP/osascript.calls" | tr -d ' ')"
-check "portability: notify-send not doubled" "1" "$(ns_count)"
+check_eq "portability: osascript preferred when both exist" "$((osa_pre + 1))" "$(wc -l < "$TMP/osascript.calls" | tr -d ' ')"
+check_eq "portability: notify-send not doubled" "1" "$(ns_count)"
 
 # stale-lock steal must work where only GNU stat exists (stat -c, no -f)
 mkdir -p "$HEADROOM_STATE_DIR/.lock-port-s4"
@@ -593,7 +604,7 @@ touch -t 202001010000 "$HEADROOM_STATE_DIR/.lock-port-s4"
 out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"port-s4",
   tool_response:("x"*9000)}' | env DANGI_NO_NOTIFY=1 PATH="$LINBIN" /bin/bash "$DANGI"); rc=$?
 check "portability: stale lock stolen with GNU-only stat" "additionalContext" "$out"
-check "portability: GNU-only stat exit 0" "0" "$rc"
+check_eq "portability: GNU-only stat exit 0" "0" "$rc"
 
 # hcat piped into head must not spew BrokenPipeError from python stdout teardown
 if [ -n "$HEADROOM_PY" ]; then
@@ -673,7 +684,7 @@ if [ -n "$HEADROOM_PY" ]; then
   check "doctor: healthy statusLine"      "statusLine"      "$out"
   check_absent "doctor: healthy has no FAIL"    "FAIL"    "$out"
   check_absent "doctor: healthy has no fixable" "fixable" "$out"
-  check "doctor: healthy exit 0" "0" "$rc"
+  check_eq "doctor: healthy exit 0" "0" "$rc"
 else
   echo "skip - doctor healthy-run tests (headroom venv not found)"
 fi
@@ -685,7 +696,7 @@ out=$(HCAT_PYTHON=/nonexistent/python DOCTOR_SETTINGS="$S2" DOCTOR_CLAUDE_DIR="$
       DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" 2>&1); rc=$?
 check "doctor: missing engine is fixable"    "fixable - engine"          "$out"
 check "doctor: smoke skipped without engine" "hcat smoke (engine missing" "$out"
-check "doctor: fixable-only still exit 0"    "0"                          "$rc"
+check_eq "doctor: fixable-only still exit 0"    "0"                          "$rc"
 
 # 32c. broken engine (import ok, real runs fail) → FAIL + nonzero exit
 BADPY="$DOCD/badpy"; mkdir -p "$BADPY"
@@ -729,10 +740,10 @@ S4="$DOCD/s4.json"; doc_settings_legacy "$CD4" > "$S4"
 out=$(env -u HCAT_PYTHON PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$S4" \
       DOCTOR_CLAUDE_DIR="$CD4" DOCTOR_VENV_DIR="$DOCD/venv-boot" bash "$DOCTOR" --fix 2>&1); rc=$?
 check "fix: reports fixed"        "fixed"   "$out"
-check "fix: exit 0"               "0"       "$rc"
+check_eq "fix: exit 0"               "0"       "$rc"
 check "fix: venv created via python3 -m venv" "-m venv $DOCD/venv-boot" "$(cat "$STUB/python3.calls" 2>/dev/null)"
 check "fix: pip install headroom (stubbed)"   "install headroom" "$(cat "$DOCD/venv-boot/pip.calls" 2>/dev/null)"
-check "fix: legacy hooks removed" "0" \
+check_eq "fix: legacy hooks removed" "0" \
   "$(jq '[.hooks // {} | to_entries[] | .value[]?.hooks[]? | select((.command // "") | test("dangi-hook|hcat-gate"))] | length' "$S4")"
 check "fix: unrelated hook preserved" "unrelated-hook" "$(cat "$S4")"
 check "fix: statusLine written" "headroom-statusline.sh" "$(jq -r '.statusLine.command // empty' "$S4")"
@@ -746,7 +757,7 @@ if [ -e "$CD4/dangi-hook.sh" ] || [ -e "$CD4/hcat-gate.sh" ] || [ -e "$CD4/hcat"
 else
   echo "ok - fix: stale copies removed"; PASS=$((PASS+1))
 fi
-check "fix: one timestamped backup" "1" "$(ls "$S4".bak.* 2>/dev/null | wc -l)"
+check_eq "fix: one timestamped backup" "1" "$(ls "$S4".bak.* 2>/dev/null | wc -l | tr -d ' ')"
 # idempotency: a second --fix run must change nothing and re-bootstrap nothing
 cp "$S4" "$DOCD/s4.after1"
 out2=$(env -u HCAT_PYTHON PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$S4" \
@@ -756,14 +767,14 @@ if cmp -s "$S4" "$DOCD/s4.after1"; then
 else
   echo "FAIL - fix: second run leaves settings unchanged"; FAIL=$((FAIL+1))
 fi
-check "fix: second run adds no backup" "1" "$(ls "$S4".bak.* 2>/dev/null | wc -l)"
-check "fix: bootstrap not repeated"    "1" "$(wc -l < "$STUB/python3.calls")"
+check_eq "fix: second run adds no backup" "1" "$(ls "$S4".bak.* 2>/dev/null | wc -l | tr -d ' ')"
+check_eq "fix: bootstrap not repeated"    "1" "$(wc -l < "$STUB/python3.calls" | tr -d ' ')"
 check_absent "fix: nothing left fixable after fix" "fixable" "$out2"
 
 # 32g. doctor CLI hygiene
 out=$(bash "$DOCTOR" --bogus 2>&1); rc=$?
 check "doctor: unknown flag errors" "unknown" "$out"
-check "doctor: unknown flag exit 2" "2"       "$rc"
+check_eq "doctor: unknown flag exit 2" "2"       "$rc"
 
 # 32h. mcp-launcher.sh — resolves the engine and execs `headroom mcp serve`
 if [ -x "$LAUNCHER" ]; then
@@ -775,7 +786,7 @@ out=$(HCAT_PYTHON="$FENG/python" bash "$LAUNCHER" 2>&1); rc=$?
 check "launcher: execs headroom mcp serve" "launched: mcp serve" "$out"
 check "launcher: update check off"         "update=off"          "$out"
 check "launcher: hf offline"               "offline=1"           "$out"
-check "launcher: exit 0"                   "0"                   "$rc"
+check_eq "launcher: exit 0"                   "0"                   "$rc"
 err=$(HCAT_PYTHON=/nonexistent/python bash "$LAUNCHER" 2>&1 >/dev/null); rc=$?
 check "launcher: missing engine names doctor" "doctor" "$err"
 if [ "$rc" -ne 0 ]; then
@@ -809,7 +820,7 @@ mcp_cmd=$(jq -r '.mcpServers.headroom.command // empty' "$MCP_JSON" 2>/dev/null)
 check "mcp.json: command uses CLAUDE_PLUGIN_ROOT" '${CLAUDE_PLUGIN_ROOT}' "$mcp_cmd"
 check "mcp.json: command targets mcp-launcher.sh" "mcp-launcher.sh"       "$mcp_cmd"
 check "mcp.json: env update off" "off" "$(jq -r '.mcpServers.headroom.env.HEADROOM_UPDATE_CHECK // empty' "$MCP_JSON" 2>/dev/null)"
-check "mcp.json: env hf offline" "1"   "$(jq -r '.mcpServers.headroom.env.HF_HUB_OFFLINE // empty' "$MCP_JSON" 2>/dev/null)"
+check_eq "mcp.json: env hf offline" "1"   "$(jq -r '.mcpServers.headroom.env.HF_HUB_OFFLINE // empty' "$MCP_JSON" 2>/dev/null)"
 # the command string is shell-interpreted (quoted like hooks.json), so run it
 # the same way the hooks.json commands are exercised: via sh -c
 mcp_resolved=${mcp_cmd/'${CLAUDE_PLUGIN_ROOT}'/"$ROOT"}
@@ -894,7 +905,7 @@ check_absent "review: dangi exempts genuine hcat run" "additionalContext" "$out"
 NOHOME_TMP="$TMP/nohome"; mkdir -p "$NOHOME_TMP"
 err=$(printf '{"transcript_path":"%s","model":{"id":"claude-opus-4-8"},"session_id":"rev-nh1"}' "$TMP/t_active.jsonl" \
   | env -u HOME -u HEADROOM_STATE_DIR TMPDIR="$NOHOME_TMP" bash "$SCRIPT" 2>&1 >"$TMP/nohome.badge"); rc=$?
-check "review: statusline survives unset HOME" "0" "$rc"
+check_eq "review: statusline survives unset HOME" "0" "$rc"
 check "review: statusline still prints a badge" "headroom" "$(cat "$TMP/nohome.badge")"
 if [ -z "$err" ]; then
   echo "ok - review: statusline stderr silent without HOME"; PASS=$((PASS+1))
@@ -904,7 +915,7 @@ else
 fi
 err=$(hook_input Bash 9000 rev-nh2 \
   | env -u HOME -u HEADROOM_STATE_DIR DANGI_NO_NOTIFY=1 TMPDIR="$NOHOME_TMP" bash "$DANGI" 2>&1 >/dev/null); rc=$?
-check "review: dangi survives unset HOME" "0" "$rc"
+check_eq "review: dangi survives unset HOME" "0" "$rc"
 if [ -z "$err" ]; then
   echo "ok - review: dangi stderr silent without HOME"; PASS=$((PASS+1))
 else
@@ -912,7 +923,7 @@ else
   echo "    got stderr: $err"; FAIL=$((FAIL+1))
 fi
 out=$(gate_input "$TMP/hc_small.json" rev-nh3 | env -u HOME -u HEADROOM_STATE_DIR bash "$GATE" 2>&1); rc=$?
-check "review: gate survives unset HOME" "0" "$rc"
+check_eq "review: gate survives unset HOME" "0" "$rc"
 check_absent "review: gate quiet without HOME" "unbound" "$out"
 
 # 34c. gate fails open when the resolved engine python cannot import headroom
@@ -967,14 +978,14 @@ FAKEHOME="$REVD/home"; mkdir -p "$FAKEHOME"
 # the launcher only needs the CLI: `headroom` on PATH is used directly
 out=$(env -u HCAT_PYTHON PATH="$CLI:/usr/bin:/bin" DOCTOR_VENV_DIR="$NOVENV" bash "$LAUNCHER" 2>&1); rc=$?
 check "f1 launcher: console-script-only layout execs" "mcp serve" "$out"
-check "f1 launcher: exit 0" "0" "$rc"
+check_eq "f1 launcher: exit 0" "0" "$rc"
 
 # hcat needs an importing python: the console script's shebang interpreter
 # (the echo-stub prints its argv, proving which interpreter hcat exec'd)
 printf '{"k":1}' > "$REVD/tiny.json"
 out=$(env -u HCAT_PYTHON HOME="$FAKEHOME" PATH="$CLI:/usr/bin:/bin" bash "$HCAT" "$REVD/tiny.json" 2>&1); rc=$?
 check "f1 hcat: shebang interpreter resolved" "$REVD/tiny.json" "$out"
-check "f1 hcat: exit 0 (not 3)" "0" "$rc"
+check_eq "f1 hcat: exit 0 (not 3)" "0" "$rc"
 
 # ...including the `#!/usr/bin/env pythonX` shebang form, resolved via PATH
 CLI2="$REVD/clibin2"; mkdir -p "$CLI2"
@@ -1005,11 +1016,11 @@ if [ -L "$SYMD/settings.json" ]; then
 else
   echo "FAIL - f2: settings.json is still a symlink after --fix"; FAIL=$((FAIL+1))
 fi
-check "f2: legacy hooks removed through the link" "0" \
+check_eq "f2: legacy hooks removed through the link" "0" \
   "$(jq '[.hooks // {} | to_entries[] | .value[]?.hooks[]? | select((.command // "") | test("dangi-hook|hcat-gate"))] | length' "$SYMD/target.json")"
 check "f2: statusLine fix landed in the target" "headroom-statusline.sh" \
   "$(jq -r '.statusLine.command // empty' "$SYMD/target.json")"
-check "f7b: doctor-written statusLine has refreshInterval 1" "1" \
+check_eq "f7b: doctor-written statusLine has refreshInterval 1" "1" \
   "$(jq -r '.statusLine.refreshInterval // empty' "$SYMD/target.json")"
 check "f5: stale-copy deletion notes project-level settings caveat" "project-level" "$out"
 
@@ -1042,7 +1053,7 @@ if [ ! -e "$REVD/f3venv" ] && cmp -s "$F3/settings.json" "$REVD/f3.settings.run1
 else
   echo "FAIL - f3: state byte-identical after two --fix runs"; FAIL=$((FAIL+1))
 fi
-check "f3: python3 never invoked" "$pyc0" "$(wc -l < "$STUB/python3.calls" | tr -d ' ')"
+check_eq "f3: python3 never invoked" "$pyc0" "$(wc -l < "$STUB/python3.calls" | tr -d ' ')"
 
 # F4: corrupt settings.json — FAIL, and all settings-mutating fixes refuse
 for shape in trailing twodoc; do
@@ -1138,7 +1149,7 @@ check "f7a: headroom badge appended" "headroom-statusline.sh" "$newcmd"
 check "f7a: chained with the installer template" 'left=$(printf' "$newcmd"
 check "f7a: original backed up" "bash ~/my-line.sh" \
       "$(jq -r '._headroomStatusLineBackup.command // empty' "$F7/settings.json")"
-check "f7a: merged entry has refreshInterval 1" "1" \
+check_eq "f7a: merged entry has refreshInterval 1" "1" \
       "$(jq -r '.statusLine.refreshInterval // empty' "$F7/settings.json")"
 cp "$F7/settings.json" "$REVD/f7.settings.run1"
 out2=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7/settings.json" \
@@ -1174,9 +1185,11 @@ check "f8: .mcp.json command quoted like hooks.json" \
       '"${CLAUDE_PLUGIN_ROOT}"/scripts/mcp-launcher.sh' \
       "$(jq -r '.mcpServers.headroom.command' "$MCP_JSON")"
 
-# --- shellcheck (when available)
+# --- shellcheck (when available) — warning severity: info-level findings
+# (e.g. SC2016 on intentionally-literal single quotes) don't fail the suite
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck "$SCRIPT" "$DANGI" "$ROOT/scripts/hcat-gate.sh"; then
+  if shellcheck --severity=warning "$SCRIPT" "$DANGI" "$ROOT/scripts/hcat-gate.sh" \
+       "$ROOT/scripts/doctor.sh" "$ROOT/scripts/mcp-launcher.sh"; then
     echo "ok - shellcheck"; PASS=$((PASS+1))
   else
     echo "FAIL - shellcheck"; FAIL=$((FAIL+1))

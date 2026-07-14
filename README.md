@@ -53,8 +53,8 @@ Every second, it looks at what your Claude session has actually done and updates
 | Badge | Colour | Meaning |
 |---|---|---|
 | `○ headroom idle (not compressing yet)` — or `○ headroom idle · 4 big blobs uncompressed` | 🔴 red | headroom hasn't compressed anything yet this session; the count appears when large tool outputs are going uncompressed |
-| `● headroom · ~2.4k tok · $0.007 · 3× \| $1.83 all-time  😴 dangi` | 🟢 green | a compression just happened — tokens saved, **money saved**, how many times, and your all-time total |
-| `○ headroom idle · ~2.4k tok · $0.007 · 3× · 2 missed \| $1.83 all-time  🤖 dangi: 2!` | ⚪ grey | quiet for 60s — dims, but keeps the totals; `· N missed` counts big results beyond what you've compressed |
+| `● headroom · ~2.4k tok · $0.01 · 3× \| $1.83 all-time  😴 dangi` | 🟢 green | a compression just happened — tokens saved, **money saved**, how many times, and your all-time total |
+| `○ headroom idle · ~2.4k tok · $0.01 · 3× · 2 missed \| $1.83 all-time  🤖 dangi: 2!` | ⚪ grey | quiet for 60s — dims, but keeps the totals; `· N missed` counts big results beyond what you've compressed |
 
 - The **token count is the running total for the whole session** (it adds up every compression).
 - It **resets to red** when you start a brand-new Claude session.
@@ -74,10 +74,10 @@ Any tool result of 4 KB or more that wasn't produced by headroom itself. Each co
 Dangi is the plugin's real-time detector. The badge tells you what you missed; Dangi catches it **as it happens**:
 
 - the moment a tool spits out ≥ 4 KB that isn't compressed, Dangi whispers to Claude (an in-context nudge, max once a minute) so it can compress right away;
-- if it keeps happening, you get a macOS notification (max once per 5 minutes);
+- if it keeps happening, you get a desktop notification — via `osascript` on macOS, falling back to `notify-send` on Linux (max once per 5 minutes);
 - and he lives at the end of your status line: `😴 dangi` when all is well, `🤖 dangi: 3!` when compression chances are slipping by.
 
-Dangi ships as a plugin hook — registered automatically while the plugin is enabled, gone when it isn't. Set `DANGI_NO_NOTIFY=1` to silence the notifications. Dangi ignores edit tools (`Edit`/`Write`) — those echo code you're changing, which is never a compression target.
+Dangi ships as a plugin hook — registered automatically while the plugin is enabled, gone when it isn't. Set `DANGI_NO_NOTIFY=1` to silence the notifications. Dangi knows what not to nag about: edit tools (`Edit`/`Write`/`MultiEdit`/`NotebookEdit` echo the code you're changing), web results (`WebFetch`/`WebSearch` return prose), image-bearing outputs (base64, not text-compressible), headroom's own tools, and the output of a genuine `hcat` run (that *is* the compression).
 
 ## hcat: stop the tokens *before* they're spent (v2.3) 🚰
 
@@ -90,7 +90,7 @@ v2.3 adds the **prevention layer**:
 
 Both ship with the plugin — there is nothing to copy or register.
 
-**v2.4:** the badge finally *sees* hcat. Every `hcat` run leaves a receipt in the transcript (`── hcat: … ~18899 tok → ~9351 tok (50.5% saved)`); the status line now parses those receipts and folds them into the token count, the dollar figure, the `N×` counter, the freshness dot, and the all-time total — passthrough receipts (files hcat couldn't shrink) count as nothing, and a big receipt is never a "missed" blob (it *is* the compression). Before v2.4 the badge only counted `headroom_compress` MCP calls, so a session that saved everything via hcat still read "idle (not compressing yet)". **v2.4.1:** Dangi recognizes receipts too — an output carrying an hcat header is a compression, not something to nudge about.
+**v2.4:** the badge finally *sees* hcat. Every `hcat` run leaves a receipt in the transcript (`── hcat: … ~18899 tok → ~9351 tok (50.5% saved)`); the status line now parses those receipts and folds them into the token count, the dollar figure, the `N×` counter, the freshness dot, and the all-time total — passthrough receipts (files hcat couldn't shrink) count as nothing, and a big genuine receipt is never a "missed" blob (it *is* the compression). Before v2.4 the badge only counted `headroom_compress` MCP calls, so a session that saved everything via hcat still read "idle (not compressing yet)". **v2.4.1:** Dangi recognizes receipts too. **v2.5:** receipt attribution is *structural* on both paths — a receipt only counts when the tool result actually came from a Bash command that invoked `hcat`; an output that merely quotes a receipt line (a `grep` over docs, a `cat` of this README) counts as nothing — and, if big, as a missed opportunity.
 
 ---
 
@@ -181,7 +181,7 @@ If you can't (or won't) use the plugin marketplace, the copy-everything-to-`~/.c
 
 Two honest caveats about the legacy flow:
 
-- **`hcat` is NOT on Claude's PATH** in a legacy install — the "on PATH" convenience only exists while the plugin is enabled. Claude must invoke it by full path: `~/.claude/hcat <file>`. The gate still fires and redirects, but the command in its message reads bare `` `hcat "<path>"` `` (and claims it's on PATH) — in a legacy install, run `~/.claude/hcat "<path>"` instead.
+- **`hcat` is NOT on Claude's PATH** in a legacy install — the "on PATH" convenience only exists while the plugin is enabled. Claude must invoke it by full path: `~/.claude/hcat <file>`. The gate is install-aware: in a legacy layout its deny message cites that full sibling path (`~/.claude/hcat "<path>"`), and the bare-`hcat`/on-PATH wording appears only for plugin installs.
 - You must also install and register the **headroom engine and MCP server yourself** (→ https://github.com/headroomlabs-ai/headroom), and you need `jq` (`brew install jq` or `apt install jq`).
 
 Do **not** run the legacy installer if the plugin is installed — you'd register every hook twice.

@@ -139,7 +139,7 @@ else
   say fixable "engine python not found — --fix creates $VENV_DIR and pip-installs headroom"
 fi
 
-# --- 3. bin/hcat + a real smoke compression of a generated ~20 KB JSON
+# --- 3. bin/hcat + a real smoke compression of a generated ~26 KB JSON
 HCAT="$PLUGIN_ROOT/bin/hcat"
 if [ ! -x "$HCAT" ]; then
   say FAIL "bin/hcat missing or not executable ($HCAT)"
