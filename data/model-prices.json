@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "note": "Input price in USD per million tokens, matched by model-id substring; FIRST match wins, so order matters (put more specific ids before broader ones). The badge reads this file when present and falls back to a built-in table otherwise. Adding a model is a data edit here — no script change. Keep it offline; do not fetch at runtime.",
+  "prices": [
+    { "match": "fable-5",     "usd_per_mtok": 10 },
+    { "match": "mythos",      "usd_per_mtok": 10 },
+    { "match": "opus-4-8",    "usd_per_mtok": 5 },
+    { "match": "opus-4-7",    "usd_per_mtok": 5 },
+    { "match": "opus-4-6",    "usd_per_mtok": 5 },
+    { "match": "opus-4-5",    "usd_per_mtok": 5 },
+    { "match": "opus-4-1",    "usd_per_mtok": 15 },
+    { "match": "opus-4-0",    "usd_per_mtok": 15 },
+    { "match": "opus-4-2025", "usd_per_mtok": 15 },
+    { "match": "3-opus",      "usd_per_mtok": 15 },
+    { "match": "haiku-4-5",   "usd_per_mtok": 1 },
+    { "match": "3-5-haiku",   "usd_per_mtok": 0.80 },
+    { "match": "3-haiku",     "usd_per_mtok": 0.25 },
+    { "match": "sonnet",      "usd_per_mtok": 3 }
+  ]
+}

@@ -197,6 +197,17 @@ else
   fi
 fi
 
+# --- 4c. bundled model price table — the badge reads it so adding a model is a
+# data edit, not a code change; --fix copies it beside the statusline copy
+PRICES_DEF="$PLUGIN_ROOT/data/model-prices.json"
+if [ "$HAVE_JQ" -eq 0 ]; then
+  say skip "model-prices.json (needs jq)"
+elif jq -e '(.prices | type) == "array" and (.prices | length) > 0' "$PRICES_DEF" >/dev/null 2>&1; then
+  say ok "model-prices.json parses ($(jq -r '.prices | length' "$PRICES_DEF") model prices)"
+else
+  say FAIL "model-prices.json missing or invalid ($PRICES_DEF)"
+fi
+
 # --- 5–8. settings.json + ~/.claude legacy state (need jq)
 LEGACY_JQ='[.hooks // {} | to_entries[] | .value[]?.hooks[]?
       | select((.command // "") | test("dangi-hook\\.sh|hcat-gate\\.sh"))
@@ -302,6 +313,8 @@ else
   end
 JQEOF
 )
+    [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
+      && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
     if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_path" && chmod +x "$sl_path" \
        && jq --arg hr "bash \"$sl_path\"" "$sl_merge_jq" \
           "$SETTINGS" > "$TMPD/settings.sl" && cat "$TMPD/settings.sl" > "$SETTINGS"; then
@@ -326,6 +339,8 @@ JQEOF
   elif cmp -s "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_copy"; then
     say ok "statusline copy is current ($sl_copy)"
   elif [ "$FIX" -eq 1 ]; then
+    [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
+      && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
     if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_copy" && chmod +x "$sl_copy"; then
       say fixed "statusline copy refreshed from the plugin ($sl_copy)"
     else
