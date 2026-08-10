@@ -33,6 +33,12 @@ SETTINGS=${DOCTOR_SETTINGS:-$HOME/.claude/settings.json}
 CLAUDE_DIR=${DOCTOR_CLAUDE_DIR:-$HOME/.claude}
 VENV_DIR=${DOCTOR_VENV_DIR:-$HOME/.headroom-venv}
 
+# Ambient-health state (see statusline.sh): checked before the run because the
+# hcat smoke test itself clears engine errors on a working compression.
+HEALTH_STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
+HEALTH_HAD_ERROR=0
+[ -f "$HEALTH_STATE_DIR/last-error" ] && HEALTH_HAD_ERROR=1
+
 FIX=0
 for arg in "$@"; do
   case $arg in
@@ -212,6 +218,14 @@ fi
 LEGACY_JQ='[.hooks // {} | to_entries[] | .value[]?.hooks[]?
       | select((.command // "") | test("dangi-hook\\.sh|hcat-gate\\.sh"))
       | select((.command // "") | contains("CLAUDE_PLUGIN_ROOT") | not)] | length'
+# the one strip program every legacy-hook fix uses (settings.json,
+# settings.local.json, project-level settings) — one definition, no drift
+LEGACY_STRIP_JQ='.hooks |= (with_entries(.value |= (map(.hooks |= map(select(
+        (((.command // "") | test("dangi-hook\\.sh|hcat-gate\\.sh"))
+         and ((.command // "") | contains("CLAUDE_PLUGIN_ROOT") | not)) | not)))
+      | map(select((.hooks | length) > 0))))
+      | with_entries(select((.value | length) > 0)))
+      | if .hooks == {} then del(.hooks) else . end'
 if [ "$HAVE_JQ" -eq 0 ]; then
   say skip "legacy hooks / statusLine / stale copies (need jq)"
 else
@@ -244,12 +258,7 @@ else
       say ok "no legacy hook registrations in settings.json"
     elif [ "$FIX" -eq 1 ]; then
       backup_settings
-      if jq '.hooks |= (with_entries(.value |= (map(.hooks |= map(select(
-              (((.command // "") | test("dangi-hook\\.sh|hcat-gate\\.sh"))
-               and ((.command // "") | contains("CLAUDE_PLUGIN_ROOT") | not)) | not)))
-            | map(select((.hooks | length) > 0))))
-          | with_entries(select((.value | length) > 0)))
-          | if .hooks == {} then del(.hooks) else . end' \
+      if jq "$LEGACY_STRIP_JQ" \
           "$SETTINGS" > "$TMPD/settings.new" && cat "$TMPD/settings.new" > "$SETTINGS"; then
         say fixed "removed $legacy legacy hook entries from settings.json (backup: settings.json.bak.*)"
         legacy=0
@@ -267,12 +276,53 @@ else
     case $legacy_local in
       ''|*[!0-9]*) legacy_local=-1 ;;   # unparseable → scan inconclusive
     esac
-    if [ "$legacy_local" -gt 0 ]; then
-      say FAIL "legacy hooks in settings.local.json ($legacy_local entries) — the doctor only edits settings.json; remove them from $LOCAL_SETTINGS by hand"
+    if [ "$legacy_local" -gt 0 ] && [ "$FIX" -eq 1 ]; then
+      cp "$LOCAL_SETTINGS" "$LOCAL_SETTINGS.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+      if jq "$LEGACY_STRIP_JQ" "$LOCAL_SETTINGS" > "$TMPD/settings.local.new" \
+         && cat "$TMPD/settings.local.new" > "$LOCAL_SETTINGS"; then
+        say fixed "removed $legacy_local legacy hook entries from settings.local.json (backup: settings.local.json.bak.*)"
+        legacy_local=0
+      else
+        say FAIL "could not rewrite settings.local.json to drop the legacy hook entries"
+      fi
+    elif [ "$legacy_local" -gt 0 ]; then
+      say fixable "legacy hooks in settings.local.json ($legacy_local entries double-firing with the plugin-native hooks)"
     elif [ "$legacy_local" -lt 0 ]; then
       say FAIL "settings.local.json did not parse ($LOCAL_SETTINGS) — legacy-hook scan inconclusive"
     fi
   fi
+
+  # 6b. project-level settings in the CURRENT directory: the same legacy-hook
+  # scan + fix, for the project the doctor is being run from. Other projects'
+  # .claude dirs are out of reach — the stale-copy note below says so.
+  PROJ_DIR=${DOCTOR_PROJECT_DIR:-$PWD}
+  proj_legacy=0
+  for pj in "$PROJ_DIR/.claude/settings.json" "$PROJ_DIR/.claude/settings.local.json"; do
+    [ -f "$pj" ] || continue
+    [ "$pj" -ef "$SETTINGS" ] && continue          # already scanned above
+    [ "$pj" -ef "$LOCAL_SETTINGS" ] && continue
+    pl=$(jq "$LEGACY_JQ" "$pj" 2>/dev/null) || pl=""
+    case $pl in
+      ''|*[!0-9]*)
+        proj_legacy=1
+        say FAIL "project settings did not parse ($pj) — legacy-hook scan inconclusive"
+        continue ;;
+    esac
+    if [ "$pl" -eq 0 ]; then
+      say ok "no legacy hook registrations in $pj"
+    elif [ "$FIX" -eq 1 ]; then
+      cp "$pj" "$pj.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+      if jq "$LEGACY_STRIP_JQ" "$pj" > "$TMPD/proj.new" && cat "$TMPD/proj.new" > "$pj"; then
+        say fixed "removed $pl legacy hook entries from $pj (backup: $pj.bak.*)"
+      else
+        proj_legacy=1
+        say FAIL "could not rewrite $pj to drop the legacy hook entries"
+      fi
+    else
+      proj_legacy=1
+      say fixable "legacy hooks in project settings ($pj: $pl entries double-firing with the plugin-native hooks)"
+    fi
+  done
 
   # 7. statusLine wiring — merge-aware, mirroring the SKILL installer: an
   # existing non-headroom command is preserved under _headroomStatusLineBackup
@@ -359,15 +409,30 @@ JQEOF
   if [ -z "$stale" ]; then
     say ok "no stale pre-plugin copies in $CLAUDE_DIR"
   elif [ "$FIX" -eq 1 ]; then
-    if [ "$PLUGNAT" -eq 1 ] && [ "$legacy" -eq 0 ] && [ "$legacy_local" -eq 0 ]; then
+    if [ "$PLUGNAT" -eq 1 ] && [ "$legacy" -eq 0 ] && [ "$legacy_local" -eq 0 ] && [ "$proj_legacy" -eq 0 ]; then
       for f in $stale; do rm -f "$CLAUDE_DIR/$f"; done
       say fixed "removed stale copies from $CLAUDE_DIR:$stale"
-      printf '%-7s - %s\n' note "project-level .claude/settings.json files are not scanned — if a project still registers the deleted paths, remove those entries by hand"
+      printf '%-7s - %s\n' note "project-level .claude settings in OTHER directories are not scanned (this one was) — if another project still registers the deleted paths, remove those entries by hand"
     else
-      say skip "stale copies kept:$stale (plugin-native hooks unconfirmed, or legacy hooks still registered in settings.json / settings.local.json)"
+      say skip "stale copies kept:$stale (plugin-native hooks unconfirmed, or legacy hooks still registered in settings.json / settings.local.json / project settings)"
     fi
   else
     say fixable "stale copies in $CLAUDE_DIR:$stale"
+  fi
+fi
+
+# --- 9. ambient-health state: hooks/hcat record failures in a last-error file
+# that flips the badge to "broken". A fully-clean doctor run (nothing failed,
+# nothing fixable) is the all-clear that restores the badge; the hcat smoke
+# test may already have cleared an engine error mid-run — report that too.
+if [ "$HEALTH_HAD_ERROR" -eq 1 ]; then
+  if [ ! -f "$HEALTH_STATE_DIR/last-error" ]; then
+    say ok "cleared recorded failure state — badge restored"
+  elif [ "$FAILED" -eq 0 ] && [ "$FIXABLE" -eq 0 ]; then
+    rm -f "$HEALTH_STATE_DIR/last-error" 2>/dev/null || true
+    say ok "cleared recorded failure state — badge restored"
+  else
+    say skip "recorded failure state kept (badge shows broken until a clean doctor run)"
   fi
 fi
 

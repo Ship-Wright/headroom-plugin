@@ -183,7 +183,23 @@ if [ "$missed" -gt 0 ] 2>/dev/null; then
   nudge=" · ${missed} missed"
 fi
 
-if [ "$n" -gt 0 ] 2>/dev/null; then
+# Ambient health: hooks/hcat record engine breakage in a last-error file (the
+# fail-silent hook discipline would otherwise make an outage look exactly like
+# idle). A fresh entry (<24h by its own timestamp) takes over the badge; doctor
+# clears the file on a fully-clean run, hcat clears it on a working compression.
+broken=""
+if [ -f "$STATE_DIR/last-error" ]; then
+  { read -r le_ts le_comp _ < "$STATE_DIR/last-error"; } 2>/dev/null || true
+  case "${le_ts:-}" in (*[!0-9]*|"") le_ts=0 ;; esac
+  le_age=$(( $(date -u +%s) - le_ts ))
+  if [ "$le_age" -ge 0 ] 2>/dev/null && [ "$le_age" -le 86400 ] 2>/dev/null; then
+    broken="${le_comp:-engine}"
+  fi
+fi
+
+if [ -n "$broken" ]; then
+  printf '\033[33m▲ headroom broken (%s) · run /doctor\033[0m' "$broken"
+elif [ "$n" -gt 0 ] 2>/dev/null; then
   tok=$(fmt_tok "$saved")
   if [ "$age" -le 60 ] 2>/dev/null; then
     printf '\033[32m● headroom · ~%s tok%s · %s×%s\033[0m' "$tok" "$money" "$n" "$lifetime"

@@ -10,6 +10,7 @@
 set -u
 
 NUDGE_BYTES=4096       # tool outputs at least this large are compression candidates
+HUGE_BYTES=${DANGI_HUGE_BYTES:-131072}  # at/above this TRUE size, advise delegation over compression
 NUDGE_COOLDOWN=60      # seconds between context nudges per session
 NOTIFY_COOLDOWN=300    # seconds between macOS notifications per session
 HPREFIX="mcp__headroom__"
@@ -51,7 +52,30 @@ sid=$(printf '%s' "$in" | jq -r '.session_id // "unknown"' 2>/dev/null) || sid="
 [ -n "$sid" ] || sid="unknown"
 now=${DANGI_NOW:-$(date +%s)}   # DANGI_NOW is a test seam for the cooldown clock
 case "$now" in (*[!0-9]*|"") now=$(date +%s) ;; esac
-kb=$(( size / 1024 ))
+
+# True-size resolution: the hook payload is truncated (~10K chars) before we
+# see it, so for file-backed reads the on-disk size — not the payload size —
+# decides what advice to give and what size to report. The TRIGGER stays on
+# payload size (a written-but-never-read file must not nudge); the file size
+# only escalates the tier and the reported KB.
+fp=""
+case "$tool" in
+  Read)
+    fp=$(printf '%s' "$in" | jq -r '.tool_input.file_path // empty' 2>/dev/null) || fp=""
+    ;;
+  Bash)
+    fp=$(printf '%s' "${cmd:-}" \
+        | grep -oE "[^[:space:]\"'\\\\]+\\.(json|jsonl|ndjson|csv|tsv|log)" | tail -1)
+    ;;
+esac
+fsize=0
+if [ -n "$fp" ] && [ -f "$fp" ]; then
+  fsize=$(wc -c < "$fp" 2>/dev/null | tr -d ' ') || fsize=0
+  case "$fsize" in (*[!0-9]*|"") fsize=0 ;; esac
+fi
+eff=$size
+[ "$fsize" -gt "$eff" ] 2>/dev/null && eff=$fsize
+kb=$(( eff / 1024 ))
 
 # Best-effort lock so parallel tool batches don't double-nudge (macOS has no
 # flock(1); mkdir is atomic). Steal a stale lock (>5s); if we still can't get
@@ -111,19 +135,39 @@ fi
 [ "$locked" -eq 1 ] && rmdir "$lock" 2>/dev/null
 
 if [ "$nudge" -eq 1 ]; then
-  # File-aware: when the Bash command names a structured file, point hcat at it
-  # by name instead of a generic <path>. High precision — only a bare token
-  # ending in a structured extension (never quotes/spaces/backslashes, so it is
-  # always JSON-safe here). Otherwise the generic placeholder is kept.
+  # File-aware: when the source is a named structured file (Bash token or Read
+  # file_path), point advice at it by name instead of a generic <path>. High
+  # precision — only a bare token ending in a structured extension (never
+  # quotes/spaces/backslashes, so it is always JSON-safe here). Otherwise the
+  # generic placeholder is kept.
   target="<path>"
-  if [ "$tool" = "Bash" ]; then
-    f=$(printf '%s' "${cmd:-}" \
-        | grep -oE "[^[:space:]\"'\\\\]+\\.(json|jsonl|ndjson|csv|tsv|log)" | tail -1)
-    [ -n "$f" ] && target="$f"
+  if [ -n "$fp" ] \
+     && printf '%s' "$fp" | LC_ALL=C grep -qE "^[^[:space:]\"'\\\\]+\\.(json|jsonl|ndjson|csv|tsv|log)$"; then
+    target="$fp"
   fi
+  # Offender memory: a file-backed blob that burned context once is recorded so
+  # hcat-gate gates its next access regardless of extension. Exact-path lines
+  # ("<epoch> <path>"), deduped, TTL-pruned on every write. Best effort.
+  if [ -n "$fp" ] && [ -f "$fp" ] && [ "$fsize" -ge "$NUDGE_BYTES" ] 2>/dev/null; then
+    off="$STATE_DIR/offenders"
+    ttl=${HEADROOM_OFFENDER_TTL:-1209600}
+    keep=$(LC_ALL=C awk -v now="$now" -v ttl="$ttl" -v p="$fp" '
+      {path=substr($0, index($0, " ") + 1)}
+      path != p && ($1+0) >= now - ttl {print}' "$off" 2>/dev/null)
+    { { [ -n "$keep" ] && printf '%s\n' "$keep"; printf '%s %s\n' "$now" "$fp"; } > "$off"; } \
+      2>/dev/null || true
+  fi
+
   batch_note=""
   [ "$batched" -gt 0 ] 2>/dev/null \
     && batch_note=" (+$batched more large outputs slipped by while I was quiet)"
-  printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"🤖 Dangi: that %s output was ~%s KB and was not compressed.%s If it came from a file on disk, run hcat \\"%s\\" via Bash next time (plugin installs have it on PATH; legacy installs use ~/.claude/hcat) — raw bytes never enter context. If it is not file-backed but structured/repetitive, use mcp__headroom__headroom_compress, or read+compress it inside a disposable subagent that returns only the compressed text."}}' "$tool" "$kb" "$batch_note" "$target"
+  # Size-tiered router: medium blobs → compress in place (hcat / MCP compress);
+  # past HUGE_BYTES at the source, compression in place would still flood the
+  # window — delegation to a disposable subagent is the right strategy.
+  if [ "$eff" -ge "$HUGE_BYTES" ] 2>/dev/null; then
+    printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"🤖 Dangi: that %s output is ~%s KB at the source — too large to compress in place.%s Do not re-read it raw: spawn a disposable subagent (Agent tool) to read/analyze \\"%s\\" and return only conclusions or an hcat-compressed digest — the raw bytes then never enter this context. (headroom_compress on a blob this size would still flood the window.)"}}' "$tool" "$kb" "$batch_note" "$target"
+  else
+    printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"🤖 Dangi: that %s output was ~%s KB and was not compressed.%s If it came from a file on disk, run hcat \\"%s\\" via Bash next time (plugin installs have it on PATH; legacy installs use ~/.claude/hcat) — raw bytes never enter context. If it is not file-backed but structured/repetitive, use mcp__headroom__headroom_compress, or read+compress it inside a disposable subagent that returns only the compressed text."}}' "$tool" "$kb" "$batch_note" "$target"
+  fi
 fi
 exit 0

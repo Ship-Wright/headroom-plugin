@@ -415,10 +415,12 @@ if [ -n "$HEADROOM_PY" ]; then
       '{hook_event_name:"PreToolUse", tool_name:"Bash", session_id:$sid, tool_input:{command:$cmd}}'
   }
   out=$(bash_gate_input "cat $TMP/hc_big.json" gate-b1 | bash "$GATE")
-  check "gate/bash: bare cat of big json denied" '"permissionDecision":"deny"' "$out"
-  check "gate/bash: reason names hcat" "hcat" "$out"
+  check "gate/bash: bare cat rewritten, not denied" '"permissionDecision":"allow"' "$out"
+  check "gate/bash: updatedInput carries the hcat command" '"updatedInput"' "$out"
+  check "gate/bash: rewritten command targets the file" "hc_big.json" "$out"
+  check_absent "gate/bash: rewrite is not a deny" '"permissionDecision":"deny"' "$out"
   out=$(bash_gate_input "cat $TMP/hc_big.json" gate-b1 | bash "$GATE")
-  check_absent "gate/bash: retry same file allowed" "deny" "$out"
+  check_absent "gate/bash: retry same file passes raw (no rewrite loop)" "updatedInput" "$out"
   out=$(bash_gate_input "cat $TMP/hc_big.json | jq '.[0]'" gate-b2 | bash "$GATE")
   check_absent "gate/bash: piped cat allowed (real processing)" "deny" "$out"
   out=$(bash_gate_input "head -c 200 $TMP/hc_big.json" gate-b2 | bash "$GATE")
@@ -428,7 +430,7 @@ if [ -n "$HEADROOM_PY" ]; then
   out=$(bash_gate_input "cat $TMP/hc_big.dart" gate-b2 | bash "$GATE")
   check_absent "gate/bash: non-structured ext allowed" "deny" "$out"
   out=$(bash_gate_input "cat \"$TMP/hc_big.json\"" gate-b3 | bash "$GATE")
-  check "gate/bash: quoted path still denied" '"permissionDecision":"deny"' "$out"
+  check "gate/bash: quoted path still rewritten" '"updatedInput"' "$out"
 else
   echo "skip - gate deny tests (headroom venv not found)"
 fi
@@ -623,6 +625,9 @@ fi
 
 # --- 33. doctor + engine bootstrap + bundled MCP definition (v2.5 WS2)
 DOCTOR="$ROOT/scripts/doctor.sh"
+# hermetic: the doctor scans $PWD/.claude by default (v2.7) — point it at an
+# empty dir so the developer's real project settings never leak into the suite
+export DOCTOR_PROJECT_DIR="$TMP/no-proj"
 LAUNCHER="$ROOT/scripts/mcp-launcher.sh"
 MCP_JSON="$ROOT/.mcp.json"
 DOCD="$TMP/doc"; mkdir -p "$DOCD"
@@ -1081,19 +1086,33 @@ for shape in trailing twodoc; do
   fi
 done
 
-# F5: legacy hooks only in settings.local.json → stale-copy deletion refuses
+# F5 (v2.7 semantics): legacy hooks in settings.local.json are now FIXABLE —
+# read-only reports them, --fix removes them (with backup) and may then also
+# delete the stale copies they referenced.
 F5="$REVD/f5"; mkdir -p "$F5/cd"
 touch "$F5/cd/dangi-hook.sh" "$F5/cd/hcat"
 doc_settings_wired "$F5/cd" > "$F5/settings.json"
 doc_settings_legacy "$F5/cd" > "$F5/settings.local.json"
 out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F5/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F5/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check "f5: read-only reports local legacy as fixable" "fixable - legacy hooks in settings.local.json" "$out"
+check "f5: read-only keeps stale copies" "stale copies" "$out"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F5/settings.json" \
       DOCTOR_CLAUDE_DIR="$F5/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix 2>&1)
-check "f5: settings.local.json legacy hooks reported" "settings.local.json" "$out"
-check "f5: stale-copy fix refuses" "stale copies kept" "$out"
-if [ -e "$F5/cd/dangi-hook.sh" ] && [ -e "$F5/cd/hcat" ]; then
-  echo "ok - f5: scripts referenced by settings.local.json survive"; PASS=$((PASS+1))
+check "f5: --fix cleans settings.local.json" "removed 2 legacy hook entries from settings.local.json" "$out"
+check_eq "f5: local legacy entries gone" "0" \
+  "$(jq '[.hooks // {} | to_entries[] | .value[]?.hooks[]? | select((.command // "") | test("dangi-hook|hcat-gate"))] | length' "$F5/settings.local.json")"
+check "f5: unrelated hook preserved" "unrelated-hook" "$(cat "$F5/settings.local.json")"
+if ls "$F5"/settings.local.json.bak.* >/dev/null 2>&1; then
+  echo "ok - f5: settings.local.json backup written"; PASS=$((PASS+1))
 else
-  echo "FAIL - f5: scripts referenced by settings.local.json survive"; FAIL=$((FAIL+1))
+  echo "FAIL - f5: settings.local.json backup written"; FAIL=$((FAIL+1))
+fi
+check "f5: stale copies removed after local fix" "removed stale copies" "$out"
+if [ ! -e "$F5/cd/dangi-hook.sh" ] && [ ! -e "$F5/cd/hcat" ]; then
+  echo "ok - f5: stale scripts deleted once nothing references them"; PASS=$((PASS+1))
+else
+  echo "FAIL - f5: stale scripts deleted once nothing references them"; FAIL=$((FAIL+1))
 fi
 
 # F6: Debian venv dead-end — half-created venv removed, actionable message
@@ -1246,11 +1265,336 @@ o4=$(fire 100100)   # >cooldown since last nudge: nudges again, names the 2 miss
 check "dangi batch: nudges again after cooldown"    "additionalContext"     "$o4"
 check "dangi batch: surfaces the suppressed count"  "2 more large outputs"  "$o4"
 
+# --- 38. ambient health: last-error state, broken badge, session probe (v2.7)
+PROBE="$ROOT/scripts/session-probe.sh"
+export HEADROOM_STATE_DIR="$TMP/state-health"
+mkdir -p "$HEADROOM_STATE_DIR"
+
+# hcat with a dead HCAT_PYTHON records an engine error (and still exits 3)
+printf '{"a":1}\n' > "$TMP/health.json"
+HCAT_PYTHON=/nonexistent/python bash "$ROOT/bin/hcat" "$TMP/health.json" >/dev/null 2>&1; rc=$?
+check_eq "health: hcat missing engine exits 3" "3" "$rc"
+check "health: hcat wrote last-error" "engine" "$(cat "$HEADROOM_STATE_DIR/last-error" 2>/dev/null)"
+
+# a fresh last-error takes over the badge and points at the doctor
+tr_h="$TMP/t_health.jsonl"; compress_event th1 500 > "$tr_h"
+out=$(badge "$tr_h" claude-opus-4-8 health-s1)
+check "health: badge shows broken"     "broken"  "$out"
+check "health: badge points at doctor" "/doctor" "$out"
+
+# a stale entry (>24h by its own timestamp) no longer takes over
+printf '%s engine old failure\n' "$(( $(date -u +%s) - 90000 ))" > "$HEADROOM_STATE_DIR/last-error"
+out=$(badge "$tr_h" claude-opus-4-8 health-s2)
+check_absent "health: stale error ignored" "broken" "$out"
+
+# gate with a resolved-but-broken engine fails open AND records the breakage
+rm -f "$HEADROOM_STATE_DIR/last-error"
+big_h="$TMP/big-health.json"; head -c 20000 /dev/zero | tr '\0' x > "$big_h"
+out=$(gate_input "$big_h" health-g1 | HCAT_PYTHON=/usr/bin/false bash "$ROOT/scripts/hcat-gate.sh"); rc=$?
+check_eq "health: gate broken engine exit 0"       "0"    "$rc"
+check_absent "health: gate broken engine fails open" "deny" "$out"
+check "health: gate recorded the breakage" "import failed" \
+      "$(cat "$HEADROOM_STATE_DIR/last-error" 2>/dev/null)"
+
+# hooks.json registers the SessionStart probe
+jq -e '.hooks.SessionStart[0].hooks[0].command | contains("session-probe.sh")' \
+   "$ROOT/hooks/hooks.json" >/dev/null 2>&1 \
+  && check "health: hooks.json registers the probe" "ok" "ok" \
+  || check "health: hooks.json registers the probe" "ok" "MISSING"
+
+# probe: healthy env is silent (existence-level checks only)
+rm -f "$HEADROOM_STATE_DIR/last-error"
+out=$(HCAT_PYTHON=/usr/bin/true bash "$PROBE"); rc=$?
+check_eq "health: probe healthy silent" "" "$out"
+check_eq "health: probe healthy exit 0" "0" "$rc"
+
+# probe: an HCAT_PYTHON pointing nowhere is a breakage → context line + last-error
+out=$(HCAT_PYTHON=/nonexistent/python bash "$PROBE"); rc=$?
+check "health: probe flags broken override" "additionalContext" "$out"
+check "health: probe wrote last-error" "engine" "$(cat "$HEADROOM_STATE_DIR/last-error" 2>/dev/null)"
+check_eq "health: probe exit 0" "0" "$rc"
+
+# probe: never-installed engine gets a pointer but does NOT flip the badge
+rm -f "$HEADROOM_STATE_DIR/last-error"
+out=$(env -u HCAT_PYTHON HOME="$TMP/nohome" PATH="$STUB:/usr/bin:/bin" bash "$PROBE")
+check "health: probe notes missing engine" "not installed" "$out"
+if [ -f "$HEADROOM_STATE_DIR/last-error" ]; then
+  echo "FAIL - health: missing engine must not write last-error"; FAIL=$((FAIL+1))
+else
+  echo "ok - health: missing engine must not write last-error"; PASS=$((PASS+1))
+fi
+
+# probe: surfaces a fresh recorded failure even when its own checks pass
+printf '%s runtime hcat: compression failed: boom\n' "$(date +%s)" > "$HEADROOM_STATE_DIR/last-error"
+out=$(HCAT_PYTHON=/usr/bin/true bash "$PROBE")
+check "health: probe surfaces recorded failure" "recent failure" "$out"
+
+# a working compression clears engine/runtime errors (real engine required)
+if [ -n "$HEADROOM_PY" ]; then
+  printf '%s engine stale\n' "$(date +%s)" > "$HEADROOM_STATE_DIR/last-error"
+  HCAT_PYTHON="$HEADROOM_PY" HEADROOM_WORKSPACE_DIR="$TMP/ws-health" \
+    bash "$ROOT/bin/hcat" "$TMP/hc_big.json" >/dev/null 2>&1
+  if [ -f "$HEADROOM_STATE_DIR/last-error" ]; then
+    echo "FAIL - health: successful hcat clears engine error"; FAIL=$((FAIL+1))
+  else
+    echo "ok - health: successful hcat clears engine error"; PASS=$((PASS+1))
+  fi
+
+  # doctor: fully-clean run clears the state; fixable/failed runs keep it
+  printf '%s engine stale2\n' "$(date +%s)" > "$HEADROOM_STATE_DIR/last-error"
+  CDH="$TMP/doc-health"; mkdir -p "$CDH"
+  SH="$TMP/doc-health-s.json"; doc_settings_wired "$CDH" > "$SH"
+  out=$(HCAT_PYTHON="$HEADROOM_PY" DOCTOR_SETTINGS="$SH" DOCTOR_CLAUDE_DIR="$CDH" \
+        DOCTOR_VENV_DIR="$TMP/doc-none" bash "$DOCTOR" 2>&1)
+  check "health: doctor reports clearing" "cleared recorded failure" "$out"
+  if [ -f "$HEADROOM_STATE_DIR/last-error" ]; then
+    echo "FAIL - health: doctor clean run removes last-error"; FAIL=$((FAIL+1))
+  else
+    echo "ok - health: doctor clean run removes last-error"; PASS=$((PASS+1))
+  fi
+else
+  echo "skip - health engine-clear tests (headroom venv not found)"
+fi
+printf '%s engine stale3\n' "$(date +%s)" > "$HEADROOM_STATE_DIR/last-error"
+out=$(HCAT_PYTHON=/nonexistent/python DOCTOR_SETTINGS="$S2" DOCTOR_CLAUDE_DIR="$CD2" \
+      DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" 2>&1)
+check "health: doctor keeps state while fixable" "failure state kept" "$out"
+rm -f "$HEADROOM_STATE_DIR/last-error"
+
+# --- 39. dangi router: true-size detection + tiered compress/delegate advice (v2.7)
+export HEADROOM_STATE_DIR="$TMP/state-router"
+
+# a 200 KB file read via Bash cat with a truncated (9 KB) payload → the nudge
+# reports the TRUE size and advises delegation, not in-place compression
+huge_f="$TMP/router-huge.json"; head -c 200000 /dev/zero | tr '\0' x > "$huge_f"
+out=$(jq -n --arg cmd "cat $huge_f" '{hook_event_name:"PostToolUse", tool_name:"Bash",
+  session_id:"router-1", tool_input:{command:$cmd}, tool_response:("x"*9000)}' | bash "$DANGI")
+check "router: huge file → delegation advice" "disposable subagent" "$out"
+check "router: huge file → true size reported" "195 KB" "$out"
+check "router: huge file names the file" "router-huge.json" "$out"
+check_absent "router: huge file → no in-place hcat advice" "run hcat" "$out"
+
+# a 20 KB file stays in the compress-in-place tier and names the file for hcat
+med_f="$TMP/router-med.json"; head -c 20000 /dev/zero | tr '\0' x > "$med_f"
+out=$(jq -n --arg cmd "cat $med_f" '{hook_event_name:"PostToolUse", tool_name:"Bash",
+  session_id:"router-2", tool_input:{command:$cmd}, tool_response:("x"*9000)}' | bash "$DANGI")
+check "router: medium file → hcat advice" "run hcat" "$out"
+check "router: medium file → true size reported" "19 KB" "$out"
+
+# a huge raw (non-file-backed) payload also routes to delegation
+out=$(hook_input Bash 140000 router-3 | bash "$DANGI")
+check "router: huge raw payload → delegation" "disposable subagent" "$out"
+check_absent "router: huge raw payload → no hcat advice" "run hcat" "$out"
+
+# Read is now file-aware too: a big structured file read via Read names itself
+out=$(jq -n --arg fp "$med_f" '{hook_event_name:"PostToolUse", tool_name:"Read",
+  session_id:"router-4", tool_input:{file_path:$fp}, tool_response:("x"*9000)}' | bash "$DANGI")
+check "router: Read names the file" "router-med.json" "$out"
+
+# a written-but-never-read big file must NOT trigger on a small payload
+out=$(jq -n --arg cmd "curl -o $huge_f https://x.test" '{hook_event_name:"PostToolUse",
+  tool_name:"Bash", session_id:"router-5", tool_input:{command:$cmd},
+  tool_response:"ok"}' | bash "$DANGI")
+check_absent "router: small payload never triggers on file size" "additionalContext" "$out"
+
+# a spacey/unsafe file path falls back to the generic placeholder (JSON safety)
+sp_dir="$TMP/router sp"; mkdir -p "$sp_dir"
+sp_f="$sp_dir/data.json"; head -c 20000 /dev/zero | tr '\0' x > "$sp_f"
+out=$(jq -n --arg fp "$sp_f" '{hook_event_name:"PostToolUse", tool_name:"Read",
+  session_id:"router-6", tool_input:{file_path:$fp}, tool_response:("x"*9000)}' | bash "$DANGI")
+check "router: unsafe path → generic placeholder" 'hcat \"<path>\"' "$out"
+printf '%s' "$out" | jq -e '.hookSpecificOutput.additionalContext' >/dev/null 2>&1 \
+  && check "router: unsafe path output is valid JSON" "ok" "ok" \
+  || check "router: unsafe path output is valid JSON" "ok" "INVALID"
+
+# --- 40. gate rewrite extras + hcat TOON-lite lossless tier (v2.7)
+export HEADROOM_STATE_DIR="$TMP/state-toon"
+
+if [ -n "$HEADROOM_PY" ]; then
+  # rewrite preserves sibling tool_input fields (full-object updatedInput)
+  out=$(jq -n --arg cmd "cat $TMP/hc_big.json" '{hook_event_name:"PreToolUse", tool_name:"Bash",
+    session_id:"toon-g1", tool_input:{command:$cmd, description:"dump the file"}}' | bash "$GATE")
+  check "rewrite: preserves other tool_input fields" '"description":"dump the file"' "$out"
+  # kill switch: HCAT_GATE_NO_REWRITE falls back to the deny redirect
+  out=$(bash_gate_input "cat $TMP/hc_big.json" toon-g2 | HCAT_GATE_NO_REWRITE=1 bash "$GATE")
+  check "rewrite: NO_REWRITE falls back to deny" '"permissionDecision":"deny"' "$out"
+else
+  echo "skip - gate rewrite extras (headroom venv not found)"
+fi
+
+# TOON-lite: uniform JSON array compresses with no engine installed at all
+uni="$TMP/toon-uniform.json"
+jq -n '[range(0; 80) | {id:., user:("user_" + (.%7|tostring)), event:"click", ok:true}]' > "$uni"
+out=$(env -u HCAT_PYTHON HOME="$TMP/nohome" PATH="$STUB:/usr/bin:/bin" bash "$ROOT/bin/hcat" "$uni"); rc=$?
+check_eq "toon: no-engine uniform json exit 0" "0" "$rc"
+check "toon: emits a receipt"          "── hcat:"          "$out"
+check "toon: names the strategy"       "toon-lite"         "$out"
+check "toon: receipt has token arrow"  " tok → ~"          "$out"
+check "toon: header row present"       "id,user,event,ok"  "$out"
+
+# non-uniform JSON without an engine still errors (exit 3)
+nonu="$TMP/toon-nonuniform.json"
+printf '{"a": {"nested": [1,2,3]}, "b": "x"}\n' > "$nonu"
+env -u HCAT_PYTHON HOME="$TMP/nohome" PATH="$STUB:/usr/bin:/bin" bash "$ROOT/bin/hcat" "$nonu" >/dev/null 2>&1; rc=$?
+check_eq "toon: no-engine non-uniform exit 3" "3" "$rc"
+
+# CSV-special values get JSON-quoted so rows stay parseable
+spec="$TMP/toon-special.json"
+jq -n '[range(0; 40) | {id:., note:"a,b \"q\" line", n:(.*2)}]' > "$spec"
+out=$(env -u HCAT_PYTHON HOME="$TMP/nohome" PATH="$STUB:/usr/bin:/bin" bash "$ROOT/bin/hcat" "$spec")
+check "toon: special chars json-quoted" '\"q\"' "$out"
+
+# --- 41. session ledger + next-session invoice (v2.7)
+LEDGERH="$ROOT/scripts/ledger-hook.sh"
+export HEADROOM_STATE_DIR="$TMP/state-ledger"
+mkdir -p "$HEADROOM_STATE_DIR"
+
+trL="$TMP/t_ledger.jsonl"
+{
+  compress_event lg1 500
+  printf '{"timestamp":"%s","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"hi"}]}}\n' "$NOW"
+  jq -n '{message:{content:[{type:"tool_use",id:"lgm1",name:"Read",input:{file_path:"/var/data/events.json"}}]}}'
+  jq -n '{message:{content:[{type:"tool_result",tool_use_id:"lgm1",content:[{type:"text",text:("z"*9000)}]}]}}'
+} > "$trL"
+
+printf '{"session_id":"ledger-s1","transcript_path":"%s"}' "$trL" | bash "$LEDGERH" >"$TMP/lh.out" 2>&1; rc=$?
+lg="$HEADROOM_STATE_DIR/ledger.jsonl"
+check_eq "ledger: exit 0" "0" "$rc"
+check_eq "ledger: hook prints nothing" "" "$(cat "$TMP/lh.out")"
+check "ledger: entry written"       "ledger-s1"                 "$(cat "$lg" 2>/dev/null)"
+check "ledger: saves recorded"      '"save_tokens":500'         "$(cat "$lg" 2>/dev/null)"
+check "ledger: miss recorded"       '"miss_count":1'            "$(cat "$lg" 2>/dev/null)"
+check "ledger: miss path captured"  "/var/data/events.json"     "$(cat "$lg" 2>/dev/null)"
+check "ledger: model captured"      "claude-opus-4-8"           "$(cat "$lg" 2>/dev/null)"
+check "ledger: saves priced"        '"save_usd":"0.002500"'     "$(cat "$lg" 2>/dev/null)"
+check "ledger: misses priced"       '"miss_usd"'                "$(cat "$lg" 2>/dev/null)"
+
+# idempotent: an unchanged transcript must not append a second line
+printf '{"session_id":"ledger-s1","transcript_path":"%s"}' "$trL" | bash "$LEDGERH"
+check_eq "ledger: unchanged transcript not re-appended" "1" "$(wc -l < "$lg" | tr -d ' ')"
+
+# growth → a new cumulative snapshot line
+compress_event lg2 700 >> "$trL"
+printf '{"session_id":"ledger-s1","transcript_path":"%s"}' "$trL" | bash "$LEDGERH"
+check_eq "ledger: grown transcript appends" "2" "$(wc -l < "$lg" | tr -d ' ')"
+check "ledger: snapshot is cumulative" '"save_tokens":1200' "$(tail -1 "$lg")"
+
+# an empty session leaves no trace
+trE="$TMP/t_ledger_empty.jsonl"; printf '{"message":{"content":[{"type":"text","text":"hi"}]}}\n' > "$trE"
+printf '{"session_id":"ledger-empty","transcript_path":"%s"}' "$trE" | bash "$LEDGERH"
+check_absent "ledger: empty session not recorded" "ledger-empty" "$(cat "$lg")"
+
+# the probe surfaces the invoice exactly once
+out=$(HCAT_PYTHON=/usr/bin/true bash "$PROBE")
+check "invoice: probe surfaces last session" "headroom invoice" "$out"
+check "invoice: reports savings"             "saved ~1.2k tok"  "$out"
+check "invoice: loss-frames the misses"      "left on the table" "$out"
+check "invoice: names the biggest miss"      "/var/data/events.json" "$out"
+out=$(HCAT_PYTHON=/usr/bin/true bash "$PROBE")
+check_absent "invoice: surfaced only once" "invoice" "$out"
+
+# hooks.json registers the ledger hook on Stop and SessionEnd
+jq -e '.hooks.Stop[0].hooks[0].command | contains("ledger-hook.sh")' \
+   "$ROOT/hooks/hooks.json" >/dev/null 2>&1 \
+  && check "ledger: hooks.json Stop registered" "ok" "ok" \
+  || check "ledger: hooks.json Stop registered" "ok" "MISSING"
+jq -e '.hooks.SessionEnd[0].hooks[0].command | contains("ledger-hook.sh")' \
+   "$ROOT/hooks/hooks.json" >/dev/null 2>&1 \
+  && check "ledger: hooks.json SessionEnd registered" "ok" "ok" \
+  || check "ledger: hooks.json SessionEnd registered" "ok" "MISSING"
+
+# --- 42. detection that learns: offender memory + content sniff (v2.7)
+export HEADROOM_STATE_DIR="$TMP/state-learn"
+mkdir -p "$HEADROOM_STATE_DIR"
+
+# dangi records a file-backed offender when the nudge fires
+learn_f="$TMP/learn-offender.json"; head -c 20000 /dev/zero | tr '\0' x > "$learn_f"
+jq -n --arg fp "$learn_f" '{hook_event_name:"PostToolUse", tool_name:"Read",
+  session_id:"learn-1", tool_input:{file_path:$fp}, tool_response:("x"*9000)}' | bash "$DANGI" >/dev/null
+check "learn: offender recorded" "$learn_f" "$(cat "$HEADROOM_STATE_DIR/offenders" 2>/dev/null)"
+
+# re-offense updates in place — no duplicate lines
+jq -n --arg fp "$learn_f" '{hook_event_name:"PostToolUse", tool_name:"Read",
+  session_id:"learn-2", tool_input:{file_path:$fp}, tool_response:("x"*9000)}' | bash "$DANGI" >/dev/null
+check_eq "learn: offender deduped" "1" "$(wc -l < "$HEADROOM_STATE_DIR/offenders" | tr -d ' ')"
+
+if [ -n "$HEADROOM_PY" ]; then
+  # a learned offender with no structured extension is now gated
+  noext="$TMP/learn-noext"; head -c 20000 /dev/zero | tr '\0' x > "$noext"
+  printf '%s %s\n' "$(date +%s)" "$noext" > "$HEADROOM_STATE_DIR/offenders"
+  out=$(gate_input "$noext" learn-g1 | bash "$GATE")
+  check "learn: offender gated without extension" '"permissionDecision":"deny"' "$out"
+  # stale entries decay (default TTL 14 days)
+  printf '%s %s\n' "$(( $(date +%s) - 1300000 ))" "$noext" > "$HEADROOM_STATE_DIR/offenders"
+  out=$(gate_input "$noext" learn-g2 | bash "$GATE")
+  check_absent "learn: stale offender ignored" "deny" "$out"
+  rm -f "$HEADROOM_STATE_DIR/offenders"
+
+  # sniff: a big extensionless JSON array is gated on structure alone
+  sniff_f="$TMP/learn-sniff"
+  jq -n '[range(0; 900) | {id:., v:"xxxxxxxxxxxxxxxx"}]' > "$sniff_f"
+  out=$(gate_input "$sniff_f" learn-g3 | bash "$GATE")
+  check "learn: sniff gates JSON-shaped file" '"permissionDecision":"deny"' "$out"
+  out=$(gate_input "$sniff_f" learn-g4 | HCAT_GATE_NO_SNIFF=1 bash "$GATE")
+  check_absent "learn: NO_SNIFF disables the sniff" "deny" "$out"
+
+  # CSV vitals: matching 3+ delimiter counts across the first two rows
+  csv_f="$TMP/learn-csv"
+  { printf 'a,b,c,d,e\n'; i=0; while [ "$i" -lt 1600 ]; do printf '1,2,3,4,five\n'; i=$((i+1)); done; } > "$csv_f"
+  out=$(gate_input "$csv_f" learn-g5 | bash "$GATE")
+  check "learn: sniff gates CSV-shaped file" '"permissionDecision":"deny"' "$out"
+
+  # plain prose stays un-gated
+  prose_f="$TMP/learn-prose"; head -c 20000 /dev/zero | tr '\0' x > "$prose_f"
+  out=$(gate_input "$prose_f" learn-g6 | bash "$GATE")
+  check_absent "learn: prose not gated" "deny" "$out"
+else
+  echo "skip - learn gate tests (headroom venv not found)"
+fi
+
+# --- 43. doctor: project-level settings scan + fix (v2.7)
+PROJ43="$TMP/proj43"; mkdir -p "$PROJ43/.claude"
+CD43="$TMP/proj43-cd"; mkdir -p "$CD43"
+S43="$TMP/proj43-s.json"; doc_settings_wired "$CD43" > "$S43"
+doc_settings_legacy "$CD43" > "$PROJ43/.claude/settings.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$S43" \
+      DOCTOR_CLAUDE_DIR="$CD43" DOCTOR_VENV_DIR="$NOVENV" DOCTOR_PROJECT_DIR="$PROJ43" \
+      bash "$DOCTOR" 2>&1)
+check "proj: legacy hooks detected as fixable" "legacy hooks in project settings" "$out"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$S43" \
+      DOCTOR_CLAUDE_DIR="$CD43" DOCTOR_VENV_DIR="$NOVENV" DOCTOR_PROJECT_DIR="$PROJ43" \
+      bash "$DOCTOR" --fix 2>&1)
+check "proj: --fix cleans project settings" \
+      "removed 2 legacy hook entries from $PROJ43/.claude/settings.json" "$out"
+check_eq "proj: entries gone" "0" \
+  "$(jq '[.hooks // {} | to_entries[] | .value[]?.hooks[]? | select((.command // "") | test("dangi-hook|hcat-gate"))] | length' "$PROJ43/.claude/settings.json")"
+check "proj: unrelated hook preserved" "unrelated-hook" "$(cat "$PROJ43/.claude/settings.json")"
+if ls "$PROJ43"/.claude/settings.json.bak.* >/dev/null 2>&1; then
+  echo "ok - proj: backup written"; PASS=$((PASS+1))
+else
+  echo "FAIL - proj: backup written"; FAIL=$((FAIL+1))
+fi
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$S43" \
+      DOCTOR_CLAUDE_DIR="$CD43" DOCTOR_VENV_DIR="$NOVENV" DOCTOR_PROJECT_DIR="$PROJ43" \
+      bash "$DOCTOR" 2>&1)
+check "proj: clean project settings reported ok" \
+      "no legacy hook registrations in $PROJ43/.claude/settings.json" "$out"
+
+# unparseable project settings → FAIL, stale-copy gate stays shut
+printf '{ broken\n' > "$PROJ43/.claude/settings.local.json"
+touch "$CD43/dangi-hook.sh"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$S43" \
+      DOCTOR_CLAUDE_DIR="$CD43" DOCTOR_VENV_DIR="$NOVENV" DOCTOR_PROJECT_DIR="$PROJ43" \
+      bash "$DOCTOR" --fix 2>&1)
+check "proj: unparseable project settings FAIL" "project settings did not parse" "$out"
+check "proj: stale copies kept while project scan inconclusive" "stale copies kept" "$out"
+
 # --- shellcheck (when available) — warning severity: info-level findings
 # (e.g. SC2016 on intentionally-literal single quotes) don't fail the suite
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck --severity=warning "$SCRIPT" "$DANGI" "$ROOT/scripts/hcat-gate.sh" \
-       "$ROOT/scripts/doctor.sh" "$ROOT/scripts/mcp-launcher.sh"; then
+       "$ROOT/scripts/doctor.sh" "$ROOT/scripts/mcp-launcher.sh" \
+       "$ROOT/scripts/session-probe.sh" "$ROOT/scripts/ledger-hook.sh"; then
     echo "ok - shellcheck"; PASS=$((PASS+1))
   else
     echo "FAIL - shellcheck"; FAIL=$((FAIL+1))
