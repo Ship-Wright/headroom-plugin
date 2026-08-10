@@ -6,9 +6,13 @@
 # blobs that went UNCOMPRESSED — counted, sized, and priced, with the biggest
 # offenders' file paths. Consumers (session-probe's invoice line, digests,
 # audits) read the ledger instead of re-parsing transcripts.
-# Dedup: a per-session marker skips the append when nothing changed, so the
-# many Stop firings of a busy session don't spam the ledger (last line per
-# session is the authoritative cumulative snapshot).
+# Cost discipline: Stop fires on EVERY assistant turn, and the slurped parse
+# is the expensive part on a multi-MB transcript — so a size marker skips the
+# parse entirely when the transcript has not grown (statusline.sh's trick),
+# and every id lookup inside the jq pass is an O(1) INDEX/set probe, never an
+# `index()` rescan (quadratic over long sessions).
+# Dedup: a per-session content marker additionally skips the append when the
+# snapshot is unchanged (last line per session is authoritative-cumulative).
 # MUST always exit 0 and print nothing — a Stop hook that speaks can block
 # the session from stopping.
 
@@ -28,36 +32,50 @@ sid=$(printf '%s' "$in" | jq -r '.session_id // "unknown"' 2>/dev/null) || sid="
 [ -n "$sid" ] || sid="unknown"
 [ -n "$tp" ] && [ -f "$tp" ] || exit 0
 
-# One slurped pass, mirroring statusline.sh's structural attribution: receipts
-# count only when linked (tool_use_id) to a Bash tool_use that really invoked
-# hcat; big results that are neither compressions nor receipts are misses.
-snap=$(jq -crs --arg tool "$TOOL" --arg pfx "$HPREFIX" --argjson min "$NUDGE_BYTES" '
-  def txt: (.content | if type=="string" then .
-                       elif type=="array" then ([.[]? | .text? // ""] | join(""))
-                       else "" end);
-  def is_receipt: test("(^|\\n)── hcat: ");
-  def is_hcat_cmd: test("(^|\\n|[|;&]\\s*|[$][(]\\s*|/)hcat(\\s|$)");
-  ([.[]|.message.content[]? | select(.type=="tool_use" and .name==$tool) | .id]) as $mids
-  | ([.[]|.message.content[]? | select(.type=="tool_use" and ((.name // "")|startswith($pfx))) | .id]) as $hpids
-  | ([.[]|.message.content[]? | select(.type=="tool_use" and (.name // "")=="Bash"
-      and ((.input.command? // "") | is_hcat_cmd)) | .id]) as $hcids
-  | ([.[]|.message.content[]? | select(.type=="tool_use")
-      | {id: (.id // ""), src: ((.input.file_path? // .input.command?) // "")}]) as $uses
-  | ([.[]|.message.content[]? | select(.type=="tool_result")
-      | {id: (.tool_use_id // ""), t: txt}]) as $res
-  | def is_genuine: (.t | is_receipt) and ((.id as $t | $hcids | index($t)) != null);
+# Shared attribution defs (plugin lib/, or a flat sibling in legacy copies);
+# without them there is nothing trustworthy to record — fail open.
+JQ_LIB=""
+for _jl in "$SELF_DIR/lib" "$SELF_DIR"; do
+  if [ -f "$_jl/attribution.jq" ]; then JQ_LIB="$_jl"; break; fi
+done
+[ -n "$JQ_LIB" ] || exit 0
+
+# Unchanged transcript → skip the whole parse, not just the append.
+tsize=$(wc -c < "$tp" 2>/dev/null | tr -d ' ') || tsize=""
+case "$tsize" in (*[!0-9]*) tsize="" ;; esac
+szmark="$STATE_DIR/session-$sid.ledgersize"
+if [ -n "$tsize" ] && [ -f "$szmark" ] && [ "$(cat "$szmark" 2>/dev/null)" = "$tsize" ]; then
+  exit 0
+fi
+
+# One slurped pass sharing statusline.sh's structural attribution (lib):
+# receipts count only when linked (tool_use_id) to a Bash tool_use that really
+# invoked hcat; big results that are neither compressions nor receipts — and
+# not an exempt output class (edits, web prose, subagent digests) — are misses.
+snap=$(jq -crs -L "$JQ_LIB" --arg tool "$TOOL" --arg pfx "$HPREFIX" --argjson min "$NUDGE_BYTES" '
+  include "attribution";
+  (mcp_ids($tool)) as $mids
+  | idset($mids) as $mset
+  | idset(headroom_ids($pfx)) as $hpset
+  | idset(hcat_bash_ids) as $hcset
+  | ([tool_uses[] | {id: (.id // ""), name: (.name // ""),
+                     src: ((.input.file_path? // .input.command?) // "")}]) as $uses
+  | (INDEX($uses[]; .id)) as $uidx
+  | tool_results as $res
+  | def is_genuine: (.t | is_receipt) and ($hcset[.id] // false);
     ($res | map(select(is_genuine)
       | (try (.t | capture("~(?<b>[0-9]+) tok → ~(?<a>[0-9]+) tok")) catch null) as $c
       | select($c != null) | (($c.b|tonumber) - ($c.a|tonumber)))) as $rsav
-  | ($res | map(select(.id as $t | $mids | index($t))
+  | ($res | map(select($mset[.id] // false)
       | (try (.t | fromjson.tokens_saved) catch 0) // 0)) as $msav
-  | ($res | map(select(((.id as $t | $hpids | index($t)) == null)
+  | ($res | map(select((($hpset[.id] // false) | not)
       and (is_genuine | not)
+      and (((($uidx[.id] // {}).name // "") as $n | (exempt_tools | index($n)) == null))
       and ((.t | length) >= $min))
       | {id: .id, bytes: (.t | length)})) as $missed
   | ($missed | map(. as $m
       | {bytes: $m.bytes,
-         path: ((([$uses[] | select(.id == $m.id) | .src] | first) // "")
+         path: ((($uidx[$m.id] // {}).src // "")
                 | (try ([scan("[^\\s\"'"'"'\\\\]+\\.(?:json|jsonl|ndjson|csv|tsv|log)")] | last)
                    catch null))})) as $mp
   | ([.[] | .message.model? // empty] | last // "") as $model
@@ -69,6 +87,11 @@ snap=$(jq -crs --arg tool "$TOOL" --arg pfx "$HPREFIX" --argjson min "$NUDGE_BYT
      top_misses: ($mp | sort_by(-.bytes) | .[0:3])}
 ' "$tp" 2>/dev/null) || exit 0
 [ -n "$snap" ] || exit 0
+
+# Remember the size we just parsed so quiet Stop firings skip the parse.
+if [ -n "$tsize" ] && mkdir -p "$STATE_DIR" 2>/dev/null; then
+  { printf '%s' "$tsize" > "$szmark"; } 2>/dev/null || true
+fi
 
 # Nothing to record → no ledger noise for empty sessions.
 sc=$(printf '%s' "$snap" | jq -r '.save_count + .miss_count' 2>/dev/null) || exit 0

@@ -37,7 +37,14 @@ VENV_DIR=${DOCTOR_VENV_DIR:-$HOME/.headroom-venv}
 # hcat smoke test itself clears engine errors on a working compression.
 HEALTH_STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
 HEALTH_HAD_ERROR=0
-[ -f "$HEALTH_STATE_DIR/last-error" ] && HEALTH_HAD_ERROR=1
+HEALTH_ERR_SNAP=""
+if [ -f "$HEALTH_STATE_DIR/last-error" ]; then
+  HEALTH_HAD_ERROR=1
+  # Snapshot the CONTENT, not just existence: a --fix run can take a while,
+  # and the final all-clear must not wipe a fresh error some other session
+  # recorded mid-run.
+  HEALTH_ERR_SNAP=$(cat "$HEALTH_STATE_DIR/last-error" 2>/dev/null) || HEALTH_ERR_SNAP=""
+fi
 
 FIX=0
 for arg in "$@"; do
@@ -429,8 +436,12 @@ if [ "$HEALTH_HAD_ERROR" -eq 1 ]; then
   if [ ! -f "$HEALTH_STATE_DIR/last-error" ]; then
     say ok "cleared recorded failure state — badge restored"
   elif [ "$FAILED" -eq 0 ] && [ "$FIXABLE" -eq 0 ]; then
-    rm -f "$HEALTH_STATE_DIR/last-error" 2>/dev/null || true
-    say ok "cleared recorded failure state — badge restored"
+    if [ "$(cat "$HEALTH_STATE_DIR/last-error" 2>/dev/null)" = "$HEALTH_ERR_SNAP" ]; then
+      rm -f "$HEALTH_STATE_DIR/last-error" 2>/dev/null || true
+      say ok "cleared recorded failure state — badge restored"
+    else
+      say skip "a NEW failure was recorded while this run was in progress — badge kept broken; run /doctor again"
+    fi
   else
     say skip "recorded failure state kept (badge shows broken until a clean doctor run)"
   fi

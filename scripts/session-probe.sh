@@ -9,15 +9,19 @@
 
 set -u
 
-STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
+# Shared state helpers (STATE_DIR, note_error). The plugin layout ships lib/
+# next to this script; a legacy flat install keeps a sibling copy. A partial
+# copy must not kill the hook — degrade to inline minimal stubs.
+here="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
+# shellcheck disable=SC1090,SC1091
+for _sl in "$here/lib/headroom-state.sh" "$here/headroom-state.sh"; do
+  [ -f "$_sl" ] && { . "$_sl"; break; }
+done
+type note_error >/dev/null 2>&1 || note_error() { :; }
+[ -n "${STATE_DIR:-}" ] || STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
 
 problems=""
 add_problem() { problems="${problems:+$problems; }$1"; }
-
-note_error() {  # note_error <component> <message> — flips the badge to broken
-  { mkdir -p "$STATE_DIR" \
-    && printf '%s %s %s\n' "$(date +%s)" "$1" "$2" > "$STATE_DIR/last-error"; } 2>/dev/null || true
-}
 
 # --- 1. jq — every hook and the badge lean on it
 if ! command -v jq >/dev/null 2>&1; then
@@ -28,12 +32,22 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # --- 2. hcat present + executable (plugin layout, legacy sibling fallback)
-here="$(cd "$(dirname "$0")" && pwd)"
 HCAT="$here/../bin/hcat"
 [ -x "$HCAT" ] || HCAT="$here/hcat"
 if [ ! -x "$HCAT" ]; then
   note_error install "hcat missing or not executable"
   add_problem "hcat is missing or not executable — reinstall the plugin or run /doctor"
+fi
+
+# --- 2b. shared attribution lib — statusline and ledger read it; without it
+# the badge and the session ledger silently degrade to zeros.
+ALIB=""
+for _al in "$here/lib/attribution.jq" "$here/attribution.jq"; do
+  if [ -f "$_al" ]; then ALIB="$_al"; break; fi
+done
+if [ -z "$ALIB" ]; then
+  note_error install "attribution.jq missing — badge/ledger attribution disabled"
+  add_problem "scripts/lib/attribution.jq is missing — reinstall the plugin or run /doctor"
 fi
 
 # --- 3. engine python resolvable (existence only — import is checked at use time)

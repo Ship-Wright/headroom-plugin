@@ -18,11 +18,14 @@ set -u
 
 # Ambient-health state shared with the statusline badge: a fresh last-error file
 # flips the badge to "broken" so silent engine failures stop looking like idle.
-STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
-note_error() {  # note_error <component> <message> — best effort, never fatal
-  { mkdir -p "$STATE_DIR" \
-    && printf '%s %s %s\n' "$(date +%s)" "$1" "$2" > "$STATE_DIR/last-error"; } 2>/dev/null || true
-}
+# The one shell definition lives in scripts/lib/headroom-state.sh (legacy flat
+# installs keep a sibling copy); a partial copy degrades to a no-op recorder.
+_hb="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
+# shellcheck disable=SC1090,SC1091
+for _sl in "$_hb/../scripts/lib/headroom-state.sh" "$_hb/headroom-state.sh"; do
+  [ -f "$_sl" ] && { . "$_sl"; break; }
+done
+type note_error >/dev/null 2>&1 || note_error() { :; }
 
 shebang_interp() {  # shebang_interp <script> — interpreter path from its #! line
   local line rest
@@ -67,11 +70,16 @@ if [ -z "$PY" ] || [ ! -x "$PY" ]; then
   if command -v jq >/dev/null 2>&1; then
     toon=$(jq -r '
       def scal: (type=="object" or type=="array") | not;
-      def cell: if type=="string" then (if test("[,\"\n]") then @json else . end) else @json end;
+      # Quote a string cell when it carries CSV specials OR would read back as
+      # a JSON scalar bare ("1", "true", "null") — losslessness means string
+      # 1 and number 1 must stay distinguishable. Keys go through cell too:
+      # a comma-bearing key must not misalign the header.
+      def jsonish: try (fromjson | true) catch false;
+      def cell: if type=="string" then (if test("[,\"\n]") or jsonish then @json else . end) else @json end;
       if type=="array" and length>1 and all(.[]; type=="object" and (to_entries | all(.value|scal)))
       then (.[0]|keys_unsorted) as $k
         | if all(.[]; keys_unsorted == $k)
-          then ($k|join(",")), (.[] | [.[$k[]]] | map(cell) | join(","))
+          then ($k|map(cell)|join(",")), (.[] | [.[$k[]]] | map(cell) | join(","))
           else empty end
       else empty end' "$FILE" 2>/dev/null) || toon=""
     if [ -n "$toon" ]; then
@@ -92,7 +100,10 @@ if [ -z "$PY" ] || [ ! -x "$PY" ]; then
     fi
   fi
   echo "hcat: headroom python not found (install headroom, or set HCAT_PYTHON)" >&2
-  note_error engine "hcat: headroom python not found — run /doctor"
+  # A never-installed engine is the ordinary idle state, NOT a breakage — only
+  # a resolved-but-dead explicit override records a broken badge (PY is
+  # non-empty here exactly when HCAT_PYTHON points at a non-executable).
+  [ -n "$PY" ] && note_error engine "hcat: HCAT_PYTHON is not executable ($PY) — run /doctor"
   exit 3
 fi
 
@@ -202,11 +213,20 @@ def _toon_lite(text):
         for v in r.values():
             if isinstance(v, (dict, list)):
                 return None
+    def scalar_like(s):
+        # A bare cell that PARSES as JSON ("1", "true", "null") would lose its
+        # string-ness on the way back — quote it to keep the rendering lossless.
+        try:
+            json.loads(s)
+            return True
+        except Exception:
+            return False
     def cell(v):
-        if isinstance(v, str) and not any(c in v for c in ',"\n'):
+        if isinstance(v, str) and not any(c in v for c in ',"\n') and not scalar_like(v):
             return v
         return json.dumps(v, ensure_ascii=False)
-    rows = [",".join(keys)]
+    # Keys go through cell too: a comma-bearing key must not misalign the header.
+    rows = [",".join(cell(k) for k in keys)]
     rows += [",".join(cell(r[k]) for k in keys) for r in data]
     return "\n".join(rows) + "\n"
 

@@ -11,16 +11,22 @@
 set -u
 
 GATE_BYTES=${HCAT_GATE_BYTES:-16384}   # gate files at least this large
-# HOME can be unset in hook environments (set -u would kill every Read);
-# degrade to a temp-dir state location rather than dying.
-STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
 
 [ -n "${HCAT_GATE_OFF:-}" ] && exit 0
 
-note_error() {  # note_error <message> — record a broken engine for the badge, best effort
-  { mkdir -p "$STATE_DIR" \
-    && printf '%s engine %s\n' "$(date +%s)" "$1" > "$STATE_DIR/last-error"; } 2>/dev/null || true
-}
+# Shared state helpers (STATE_DIR, note_error, canon_path). The plugin layout
+# ships lib/ next to this script; a legacy flat install keeps a sibling copy.
+# A partial copy must not kill the hook — degrade to inline minimal stubs.
+_here="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
+# shellcheck disable=SC1090,SC1091
+for _sl in "$_here/lib/headroom-state.sh" "$_here/headroom-state.sh"; do
+  [ -f "$_sl" ] && { . "$_sl"; break; }
+done
+type note_error >/dev/null 2>&1 || note_error() { :; }
+type canon_path >/dev/null 2>&1 || canon_path() { printf '%s' "$1"; }
+# HOME can be unset in hook environments (set -u would kill every Read);
+# degrade to a temp-dir state location rather than dying.
+[ -n "${STATE_DIR:-}" ] || STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
 
 in=$(cat)
 
@@ -33,12 +39,21 @@ case "$tool" in
     # Only a bare, single-file `cat <path>` — a raw whole-file dump. Pipes,
     # redirects, flags, and bounded peeks (head/tail) are real processing.
     cmd=$(printf '%s' "$in" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
+    # A multiline command can contain a bare `cat` on ONE of its lines; acting
+    # on that line would silently drop the others in a rewrite. Any newline →
+    # not ours (bash-3.2-safe literal).
+    nl=$(printf '\nx'); nl=${nl%x}
+    case "$cmd" in *"$nl"*) exit 0 ;; esac
     case "$cmd" in *'|'*|*'>'*|*'<'*|*';'*|*'&'*|*'$('*|*'`'*) exit 0 ;; esac
     fp=$(printf '%s' "$cmd" | sed -nE 's/^[[:space:]]*cat[[:space:]]+("([^"]+)"|'\''([^'\'']+)'\''|([^[:space:]]+))[[:space:]]*$/\2\3\4/p')
     ;;
   *) exit 0 ;;
 esac
 [ -n "$fp" ] && [ -f "$fp" ] || exit 0
+# Canonical absolute path: dangi records offenders canonical, the once-per-file
+# state stays stable across cwd changes, and a rewritten command keeps working
+# even when the Bash tool's cwd differs from the hook's.
+fp=$(canon_path "$fp")
 
 size=$(wc -c < "$fp" 2>/dev/null | tr -d ' ') || exit 0
 case "$size" in (*[!0-9]*|"") exit 0 ;; esac
@@ -99,14 +114,14 @@ if [ -n "$py" ]; then
   # (An engine that was never installed is NOT recorded: that is the ordinary
   # red-idle state, not a breakage.)
   if [ ! -x "$py" ]; then
-    note_error "engine python not executable ($py) — gate failing open; run /doctor"
+    note_error engine "engine python not executable ($py) — gate failing open; run /doctor"
     exit 0
   fi
   # A half-created venv passes -x yet cannot `import headroom` (hcat exits 4)
   # — verify the import and fail OPEN (allow the Read) on a broken engine.
   # Only runs on the rare deny path, so the interpreter spawn is fine.
   if ! "$py" -c 'import headroom' >/dev/null 2>&1; then
-    note_error "engine import failed ($py) — gate failing open; run /doctor"
+    note_error engine "engine import failed ($py) — gate failing open; run /doctor"
     exit 0
   fi
 else
@@ -147,10 +162,16 @@ fi
 if [ "$tool" = "Bash" ] && [ -z "${HCAT_GATE_NO_REWRITE:-}" ]; then
   safe=1
   case "$fp$hcat_cmd" in *'"'*|*'\'*|*'$'*|*'`'*) safe=0 ;; esac
+  # The command word must stay a bare unquoted token — that is the only shape
+  # the attribution regexes (statusline/ledger/dangi) recognise as an hcat
+  # run; a quoted word would score every rewrite as a MISS. A legacy hcat
+  # path containing whitespace cannot be written unquoted → deny path.
+  case "$hcat_cmd" in *[[:space:]]*) safe=0 ;; esac
   if [ "$safe" -eq 1 ]; then
-    printf '%s' "$in" | jq -c --arg cmd "\"$hcat_cmd\" \"$fp\"" --arg fp "$fp" --arg kb "$kb" \
+    printf '%s' "$in" | jq -c --arg cmd "$hcat_cmd \"$fp\"" --arg fp "$fp" --arg kb "$kb" \
       '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",
         permissionDecisionReason:("🤖 hcat-gate: rewrote the raw `cat` to `" + $cmd + "` — \($fp) is \($kb) KB of structured data; hcat prints a compressed rendering with a receipt (raw bytes never enter context; Read the path with offset/limit for exact details)."),
+        additionalContext:("🤖 hcat-gate: your `cat` was rewritten to `" + $cmd + "` — \($fp) is \($kb) KB of structured data, so what you received is the hcat compressed rendering (see the receipt line; raw bytes never entered context; Read the path with offset/limit for exact details)."),
         updatedInput: ((.tool_input // {}) | .command = $cmd)}}' 2>/dev/null
     exit 0
   fi

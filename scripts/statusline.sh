@@ -10,6 +10,12 @@ TOOL="mcp__headroom__headroom_compress"
 # degrade to a temp-dir state location rather than dying on every render.
 STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
 SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)
+# Shared attribution defs (plugin lib/, or a flat sibling in legacy copies).
+# Missing lib → compute() degrades to zeros (idle badge), never an error.
+JQ_LIB=""
+for _jl in "$SELF_DIR/lib" "$SELF_DIR"; do
+  if [ -f "$_jl/attribution.jq" ]; then JQ_LIB="$_jl"; break; fi
+done
 NUDGE_BYTES=4096            # tool results at least this large count as compression candidates
 HPREFIX="mcp__headroom__"   # results of headroom's own tools are never "missed"
 
@@ -89,32 +95,30 @@ n=0; saved=0; last_ts=""; missed=0
 # "big" (they ARE the compression, not a missed opportunity).
 compute() {
   local out big hn hsaved
-  out=$(jq -rs --arg tool "$TOOL" --arg pfx "$HPREFIX" --argjson min "$NUDGE_BYTES" '
-    def txt: (.content | if type=="string" then .
-                         elif type=="array" then ([.[]? | .text? // ""] | join(""))
-                         else "" end);
-    def is_receipt: test("(^|\\n)── hcat: ");
-    def is_hcat_cmd: test("(^|\\n|[|;&]\\s*|[$][(]\\s*|/)hcat(\\s|$)");
-    ([.[]|.message.content[]? | select(.type=="tool_use" and .name==$tool) | .id]) as $mids
-    | ([.[]|.message.content[]? | select(.type=="tool_use" and ((.name // "")|startswith($pfx))) | .id]) as $hpids
-    | ([.[]|.message.content[]? | select(.type=="tool_use" and (.name // "")=="Bash"
-        and ((.input.command? // "") | is_hcat_cmd)) | .id]) as $hcids
-    | ([.[]|.message.content[]? | select(.type=="tool_result")
-        | {id: (.tool_use_id // ""), t: txt}]) as $res
-    | def is_genuine: (.t | is_receipt) and ((.id as $t | $hcids | index($t)) != null);
+  [ -n "$JQ_LIB" ] || return 0
+  out=$(jq -rs -L "$JQ_LIB" --arg tool "$TOOL" --arg pfx "$HPREFIX" --argjson min "$NUDGE_BYTES" '
+    include "attribution";
+    (mcp_ids($tool)) as $mids
+    | idset($mids) as $mset
+    | idset(headroom_ids($pfx)) as $hpset
+    | idset(hcat_bash_ids) as $hcset
+    | idset([tool_uses[] | select((.name // "") as $n | (exempt_tools | index($n)) != null) | .id]) as $eset
+    | tool_results as $res
+    | def is_genuine: (.t | is_receipt) and ($hcset[.id] // false);
       ($res | map(select(is_genuine)
         | (try (.t | capture("~(?<b>[0-9]+) tok → ~(?<a>[0-9]+) tok")) catch null) as $c
         | select($c != null)
         | {id: .id, s: (($c.b|tonumber) - ($c.a|tonumber))})) as $rcpt
-    | ($res | map(select(.id as $t | $mids | index($t))
+    | ($res | map(select($mset[.id] // false)
         | (try (.t | fromjson.tokens_saved) catch 0) // 0) | add // 0) as $saved
-    | ($res | map(select(((.id as $t | $hpids | index($t)) == null)
+    | ($res | map(select((($hpset[.id] // false) | not)
+        and (($eset[.id] // false) | not)
         and (is_genuine | not)
         and ((.t | length) >= $min))) | length) as $big
-    | ($rcpt | map(.id)) as $rids
+    | idset($rcpt | map(.id)) as $ridx
     | ([.[] | select(.timestamp)
         | select(any(.message.content[]?; .type=="tool_use"
-            and (((.name // "") == $tool) or ((.id // "") as $i | ($rids | index($i)) != null))))
+            and (((.name // "") == $tool) or ($ridx[.id // ""] // false))))
         | .timestamp] | max // "") as $last
     | "\($mids|length)|\($saved)|\($big)|\($rcpt|length)|\($rcpt | map(.s) | add // 0)|\($last)"
   ' "$tp" 2>/dev/null)
