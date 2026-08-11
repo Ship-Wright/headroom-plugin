@@ -6,10 +6,15 @@
 set -u
 
 TOOL="mcp__headroom__headroom_compress"
+SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)
+# Shared STATE_DIR definition (plugin lib/, or a flat sibling in legacy copies).
+# shellcheck disable=SC1090,SC1091
+for _sl in "$SELF_DIR/lib/headroom-state.sh" "$SELF_DIR/headroom-state.sh"; do
+  [ -f "$_sl" ] && { . "$_sl"; break; }
+done
 # HOME can be unset in hook/statusline environments (set -u would kill us);
 # degrade to a temp-dir state location rather than dying on every render.
-STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
-SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)
+[ -n "${STATE_DIR:-}" ] || STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
 # Shared attribution defs (plugin lib/, or a flat sibling in legacy copies).
 # Missing lib → compute() degrades to zeros (idle badge), never an error.
 JQ_LIB=""

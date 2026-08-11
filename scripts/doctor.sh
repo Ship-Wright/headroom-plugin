@@ -34,8 +34,14 @@ CLAUDE_DIR=${DOCTOR_CLAUDE_DIR:-$HOME/.claude}
 VENV_DIR=${DOCTOR_VENV_DIR:-$HOME/.headroom-venv}
 
 # Ambient-health state (see statusline.sh): checked before the run because the
-# hcat smoke test itself clears engine errors on a working compression.
-HEALTH_STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
+# hcat smoke test itself clears engine errors on a working compression. Source
+# the shared STATE_DIR definition; fall back to the inline default if the lib
+# is absent (legacy flat install).
+# shellcheck disable=SC1090,SC1091
+for _sl in "$SELF_DIR/lib/headroom-state.sh" "$SELF_DIR/headroom-state.sh"; do
+  [ -f "$_sl" ] && { . "$_sl"; break; }
+done
+HEALTH_STATE_DIR="${STATE_DIR:-${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}}"
 HEALTH_HAD_ERROR=0
 HEALTH_ERR_SNAP=""
 if [ -f "$HEALTH_STATE_DIR/last-error" ]; then

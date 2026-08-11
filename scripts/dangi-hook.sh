@@ -24,6 +24,12 @@ for _sl in "$_here/lib/headroom-state.sh" "$_here/headroom-state.sh"; do
   [ -f "$_sl" ] && { . "$_sl"; break; }
 done
 type canon_path >/dev/null 2>&1 || canon_path() { printf '%s' "$1"; }
+# Offender learning needs both structure predicates; a partial lib disables
+# learning rather than emitting `command not found` on a hook's stdout/stderr.
+type structured_ext >/dev/null 2>&1 || structured_ext() {
+  case "$1" in *.json|*.jsonl|*.ndjson|*.csv|*.tsv|*.log) return 0 ;; esac; return 1
+}
+type sniff_structured >/dev/null 2>&1 || sniff_structured() { return 1; }
 # HOME can be unset in hook environments (set -u would kill every tool call);
 # degrade to a temp-dir state location rather than dying.
 [ -n "${STATE_DIR:-}" ] || STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
@@ -74,7 +80,13 @@ case "$tool" in
     fp=$(printf '%s' "$in" | jq -r '.tool_input.file_path // empty' 2>/dev/null) || fp=""
     ;;
   Bash)
-    fp=$(printf '%s' "${cmd:-}" \
+    # A whole-file `cat`/`hcat <file>` names its target regardless of extension
+    # — so an extensionless/mislabeled dump still gets stat'd, tiered, and named
+    # (parity with the Read path). Otherwise fall back to a structured file
+    # merely NAMED in a filter command (grep/jq over a .json/.log), which the
+    # ingest check below will keep at payload size.
+    fp=$(printf '%s' "${cmd:-}" | sed -nE 's/^[[:space:]]*([^[:space:]]*\/)?(cat|hcat)[[:space:]]+("([^"]+)"|'\''([^'\'']+)'\''|([^[:space:]]+))[[:space:]]*$/\4\5\6/p')
+    [ -n "$fp" ] || fp=$(printf '%s' "${cmd:-}" \
         | grep -oE "[^[:space:]\"'\\\\]+\\.(json|jsonl|ndjson|csv|tsv|log)" | tail -1)
     ;;
 esac
@@ -163,14 +175,14 @@ fi
 [ "$locked" -eq 1 ] && rmdir "$lock" 2>/dev/null
 
 if [ "$nudge" -eq 1 ]; then
-  # File-aware: when the source is a real file on disk whose path is JSON-safe
-  # (no whitespace/quotes/backslashes — it is printf'd into a JSON literal),
-  # point advice at it by name. Extension no longer matters: the huge tier
-  # fires precisely on extensionless/mislabeled dumps, and handing the model a
-  # literal "<path>" placeholder there sends a subagent to a nonexistent file.
+  # File-aware: when the source is a real file on disk whose path is SHELL-SAFE,
+  # point advice at it by name. The reject class matches the gate's rewrite
+  # guard — no whitespace, quote, backslash, `$`, or backtick — because the
+  # nudge tells Claude to `run hcat "<path>"`, so a `$(...)`/backtick path must
+  # fall back to the generic placeholder rather than become a runnable command.
   target="<path>"
   if [ -n "$fp" ] \
-     && printf '%s' "$fp" | LC_ALL=C grep -qE "^[^[:space:]\"'\\\\]+$"; then
+     && printf '%s' "$fp" | LC_ALL=C grep -qE '^[^[:space:]"'\''\\$`]+$'; then
     target="$fp"
   fi
   # Offender memory: a file-backed blob that burned context once is recorded so
@@ -178,9 +190,9 @@ if [ "$nudge" -eq 1 ]; then
   # file actually LOOKS structured (innate extension or 512-byte sniff): a big
   # source file read once must not get itself compression-gated for 14 days.
   # Canonical exact-path lines ("<epoch> <path>"), deduped, TTL-pruned on every
-  # write. Best effort; off when the shared lib is absent.
+  # write. Best effort; structured_ext/sniff_structured degrade to false stubs
+  # when the shared lib is absent, so learning simply switches off.
   if [ -n "$fp" ] && [ -f "$fp" ] && [ "$fsize" -ge "$NUDGE_BYTES" ] 2>/dev/null \
-     && type structured_ext >/dev/null 2>&1 \
      && { structured_ext "$fp" || sniff_structured "$fp"; }; then
     off="$STATE_DIR/offenders"
     ttl=${HEADROOM_OFFENDER_TTL:-1209600}

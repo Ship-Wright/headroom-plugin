@@ -24,6 +24,12 @@ for _sl in "$_here/lib/headroom-state.sh" "$_here/headroom-state.sh"; do
 done
 type note_error >/dev/null 2>&1 || note_error() { :; }
 type canon_path >/dev/null 2>&1 || canon_path() { printf '%s' "$1"; }
+# Eligibility predicates come from the same lib (one definition shared with
+# dangi-hook); a partial copy degrades to "extension only", never a crash.
+type structured_ext >/dev/null 2>&1 || structured_ext() {
+  case "$1" in *.json|*.jsonl|*.ndjson|*.csv|*.tsv|*.log) return 0 ;; esac; return 1
+}
+type sniff_structured >/dev/null 2>&1 || sniff_structured() { return 1; }
 # HOME can be unset in hook environments (set -u would kill every Read);
 # degrade to a temp-dir state location rather than dying.
 [ -n "${STATE_DIR:-}" ] || STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
@@ -46,6 +52,16 @@ case "$tool" in
     case "$cmd" in *"$nl"*) exit 0 ;; esac
     case "$cmd" in *'|'*|*'>'*|*'<'*|*';'*|*'&'*|*'$('*|*'`'*) exit 0 ;; esac
     fp=$(printf '%s' "$cmd" | sed -nE 's/^[[:space:]]*cat[[:space:]]+("([^"]+)"|'\''([^'\'']+)'\''|([^[:space:]]+))[[:space:]]*$/\2\3\4/p')
+    # A relative token resolves against the BASH TOOL's cwd, not the hook's; use
+    # the payload cwd so we gate/rewrite the file Claude's `cat` actually names.
+    # No payload cwd → skip rather than risk a same-named wrong file at ours.
+    case "$fp" in
+      ''|/*) : ;;
+      *)
+        hookcwd=$(printf '%s' "$in" | jq -r '.cwd // empty' 2>/dev/null) || hookcwd=""
+        [ -n "$hookcwd" ] && fp="$hookcwd/$fp" || exit 0
+        ;;
+    esac
     ;;
   *) exit 0 ;;
 esac
@@ -59,15 +75,14 @@ size=$(wc -c < "$fp" 2>/dev/null | tr -d ' ') || exit 0
 case "$size" in (*[!0-9]*|"") exit 0 ;; esac
 [ "$size" -ge "$GATE_BYTES" ] || exit 0
 
-# Eligibility: structured extension (innate list), OR a learned offender (this
-# exact path burned context before — recorded by dangi-hook, TTL-decayed), OR
-# a 512-byte structural sniff for big files whose extension lies (extensionless
-# API dumps, .txt JSON). The learned/sniff tiers close the narrow-gate misses
-# without widening the fragile static pattern list.
+# Eligibility (predicates shared with dangi-hook via the lib): structured
+# extension (innate list), OR a learned offender (this exact path burned
+# context before — recorded by dangi-hook, TTL-decayed), OR a 512-byte
+# structural sniff for big files whose extension lies (extensionless API dumps,
+# .txt JSON). The learned/sniff tiers close the narrow-gate misses without
+# widening the fragile static pattern list.
 eligible=0
-case "$fp" in
-  *.json|*.jsonl|*.ndjson|*.csv|*.tsv|*.log) eligible=1 ;;
-esac
+structured_ext "$fp" && eligible=1
 if [ "$eligible" -eq 0 ] && [ -f "$STATE_DIR/offenders" ]; then
   now_g=$(date +%s)
   ttl=${HEADROOM_OFFENDER_TTL:-1209600}   # learned entries decay after 14 days
@@ -78,16 +93,8 @@ if [ "$eligible" -eq 0 ] && [ -f "$STATE_DIR/offenders" ]; then
     eligible=1
   fi
 fi
-if [ "$eligible" -eq 0 ] && [ -z "${HCAT_GATE_NO_SNIFF:-}" ]; then
-  h=$(head -c 512 "$fp" 2>/dev/null | tr -d '\0')
-  fc=$(printf '%s' "$h" | LC_ALL=C awk '{gsub(/^[ \t\r]+/,""); if (length($0)) {print substr($0,1,1); exit}}')
-  case "$fc" in '{'|'[') eligible=1 ;; esac
-  if [ "$eligible" -eq 0 ]; then
-    # delimiter vitals: two rows with the same 3+ comma/tab count reads as CSV/TSV
-    c1=$(printf '%s' "$h" | sed -n 1p | tr -cd ',\t' | wc -c | tr -d ' ')
-    c2=$(printf '%s' "$h" | sed -n 2p | tr -cd ',\t' | wc -c | tr -d ' ')
-    [ "$c1" -ge 3 ] 2>/dev/null && [ "$c1" -eq "$c2" ] 2>/dev/null && eligible=1
-  fi
+if [ "$eligible" -eq 0 ] && [ -z "${HCAT_GATE_NO_SNIFF:-}" ] && sniff_structured "$fp"; then
+  eligible=1
 fi
 [ "$eligible" -eq 1 ] || exit 0
 
@@ -177,7 +184,13 @@ if [ "$tool" = "Bash" ] && [ -z "${HCAT_GATE_NO_REWRITE:-}" ]; then
   fi
 fi
 
-jq -cn --arg fp "$fp" --arg kb "$kb" --arg hcat "$hcat_cmd" --arg note "$path_note" \
+# The suggested command is SINGLE-quoted, not double-quoted: the path reaches
+# this deny message unsanitized (the rewrite path routes every "/\/$/backtick
+# path here), and a double-quoted "$(...)" path would be a runnable-command
+# injection if copy-pasted. Single quotes make every metacharacter literal;
+# an embedded single quote becomes the '\'' splice (bash-3.2 parameter expand).
+fpq=${fp//\'/\'\\\'\'}
+jq -cn --arg fpq "'$fpq'" --arg fp "$fp" --arg kb "$kb" --arg hcat "$hcat_cmd" --arg note "$path_note" \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",
-    permissionDecisionReason:("🤖 hcat-gate: \($fp) is a \($kb) KB structured file. Run `\($hcat) \"\($fp)\"` in Bash instead\($note) — it prints a compressed rendering (raw bytes never enter context; Read the path with offset/limit later for exact details). To read it raw anyway, just Read it again — this gate only fires once per file.")}}' 2>/dev/null
+    permissionDecisionReason:("🤖 hcat-gate: \($fp) is a \($kb) KB structured file. Run `\($hcat) \($fpq)` in Bash instead\($note) — it prints a compressed rendering (raw bytes never enter context; Read the path with offset/limit later for exact details). To read it raw anyway, just Read it again — this gate only fires once per file.")}}' 2>/dev/null
 exit 0

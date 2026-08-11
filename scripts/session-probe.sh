@@ -39,16 +39,16 @@ if [ ! -x "$HCAT" ]; then
   add_problem "hcat is missing or not executable — reinstall the plugin or run /doctor"
 fi
 
-# --- 2b. shared attribution lib — statusline and ledger read it; without it
-# the badge and the session ledger silently degrade to zeros.
-ALIB=""
-for _al in "$here/lib/attribution.jq" "$here/attribution.jq"; do
-  if [ -f "$_al" ]; then ALIB="$_al"; break; fi
+# --- 2b. shared libs — the badge/ledger read attribution.jq; the hooks source
+# headroom-state.sh for ambient-health + offender-learning. Without them those
+# features silently degrade to no-ops. Plugin installs ship them in lib/; a
+# legacy flat install keeps them as siblings (copied by the manual installer).
+for _lib in attribution.jq headroom-state.sh; do
+  if [ ! -f "$here/lib/$_lib" ] && [ ! -f "$here/$_lib" ]; then
+    note_error install "$_lib missing — badge/ledger/health degraded"
+    add_problem "$_lib is missing — reinstall the plugin, or (legacy install) re-run the manual installer to copy scripts/lib/*"
+  fi
 done
-if [ -z "$ALIB" ]; then
-  note_error install "attribution.jq missing — badge/ledger attribution disabled"
-  add_problem "scripts/lib/attribution.jq is missing — reinstall the plugin or run /doctor"
-fi
 
 # --- 3. engine python resolvable (existence only — import is checked at use time)
 if [ -n "${HCAT_PYTHON:-}" ]; then

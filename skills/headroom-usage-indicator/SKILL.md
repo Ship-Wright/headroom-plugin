@@ -159,6 +159,14 @@ ledger_dest = pathlib.Path.home() / ".claude" / "ledger-hook.sh"
 shutil.copyfile(PLUGIN_ROOT / "scripts" / "ledger-hook.sh", ledger_dest)
 ledger_dest.chmod(0o755)
 
+# Shared libs (v2.7): the hooks/hcat/statusline/ledger all source these as flat
+# siblings in a legacy layout ($here/headroom-state.sh, $here/attribution.jq).
+# WITHOUT them, ambient-health (broken badge) and offender-learning silently
+# degrade to no-ops and the badge/ledger attribution reads zero — so copy them.
+for _lib in ("headroom-state.sh", "attribution.jq"):
+    shutil.copyfile(PLUGIN_ROOT / "scripts" / "lib" / _lib,
+                    pathlib.Path.home() / ".claude" / _lib)
+
 p = pathlib.Path.home() / ".claude" / "settings.json"
 data = json.loads(p.read_text()) if p.exists() else {}
 MARK = "headroom-statusline.sh"                    # v2 marker
@@ -223,7 +231,7 @@ print("headroom status line", mode, "+ dangi hook + hcat gate + session-probe + 
 PY
 ```
 
-**To remove a legacy install:** restore the status line as above, remove the `hooks.PostToolUse` entry referencing `dangi-hook.sh`, the `hooks.PreToolUse` entry referencing `hcat-gate.sh`, the `hooks.SessionStart` entry referencing `session-probe.sh`, and the `hooks.Stop`/`hooks.SessionEnd` entries referencing `ledger-hook.sh` from `settings.json`; then delete `~/.claude/dangi-hook.sh`, `~/.claude/hcat-gate.sh`, `~/.claude/hcat`, `~/.claude/session-probe.sh`, and `~/.claude/ledger-hook.sh`.
+**To remove a legacy install:** restore the status line as above, remove the `hooks.PostToolUse` entry referencing `dangi-hook.sh`, the `hooks.PreToolUse` entry referencing `hcat-gate.sh`, the `hooks.SessionStart` entry referencing `session-probe.sh`, and the `hooks.Stop`/`hooks.SessionEnd` entries referencing `ledger-hook.sh` from `settings.json`; then delete `~/.claude/dangi-hook.sh`, `~/.claude/hcat-gate.sh`, `~/.claude/hcat`, `~/.claude/session-probe.sh`, `~/.claude/ledger-hook.sh`, and the shared libs `~/.claude/headroom-state.sh` and `~/.claude/attribution.jq`.
 
 ## Verify Before Trusting It
 

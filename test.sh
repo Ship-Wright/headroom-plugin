@@ -48,6 +48,10 @@ badge() {  # badge <transcript> <model-id> <session-id> — run the script as Cl
     | bash "$SCRIPT"
 }
 
+mkuniform() {  # mkuniform <path> [rows] — a uniform JSON array (gate-eligible by size)
+  jq -n --argjson n "${2:-900}" '[range(0; $n) | {id:., v:"xxxxxxxxxxxxxxxx"}]' > "$1"
+}
+
 NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
 
 compress_event() {  # compress_event <tool-use-id> <tokens-saved> — one compress + linked result
@@ -493,7 +497,7 @@ if jq -e . "$HOOKS_JSON" >/dev/null 2>&1; then
 else
   echo "FAIL - hooks.json: parses"; FAIL=$((FAIL+1))
 fi
-check "hooks.json: exactly the two event arrays" "PostToolUse,PreToolUse" \
+check_eq "hooks.json: exactly the five event arrays" "PostToolUse,PreToolUse,SessionEnd,SessionStart,Stop" \
   "$(jq -r '.hooks | keys | sort | join(",")' "$HOOKS_JSON" 2>/dev/null)"
 check_eq "hooks.json: single PreToolUse entry"  "1" "$(jq -r '.hooks.PreToolUse  | length' "$HOOKS_JSON" 2>/dev/null)"
 check_eq "hooks.json: single PostToolUse entry" "1" "$(jq -r '.hooks.PostToolUse | length' "$HOOKS_JSON" 2>/dev/null)"
@@ -528,7 +532,7 @@ if [ -n "$HEADROOM_PY" ]; then
   out=$(gate_input "$TMP/hc_big.json" plugnat-g1 | CLAUDE_PLUGIN_ROOT="$ROOT" sh -c "$gate_cmd"); rc=$?
   check "plugin-native gate: denies big json via hooks.json command" '"permissionDecision":"deny"' "$out"
   check_eq "plugin-native gate: exit 0" "0" "$rc"
-  check "gate deny: plain hcat form" 'Run `hcat \"' "$out"
+  check "gate deny: plain single-quoted hcat form" "Run \`hcat '" "$out"
   check_absent "gate deny: no scripts/hcat path" "scripts/hcat" "$out"
   check_absent "gate deny: no bin/hcat path" "bin/hcat" "$out"
   check_absent "gate deny: no .claude/hcat" ".claude/hcat" "$out"
@@ -1414,7 +1418,7 @@ export HEADROOM_STATE_DIR="$TMP/state-toon"
 # The fake engine ($FENG/python exits 0 for everything, `import headroom`
 # included) satisfies the gate's engine checks — these run venv or not.
 big40="$TMP/hc_big40.json"
-jq -n '[range(0; 900) | {id:., v:"xxxxxxxxxxxxxxxx"}]' > "$big40"
+mkuniform "$big40"
 # rewrite preserves sibling tool_input fields (full-object updatedInput)
 out=$(jq -n --arg cmd "cat $big40" '{hook_event_name:"PreToolUse", tool_name:"Bash",
   session_id:"toon-g1", tool_input:{command:$cmd, description:"dump the file"}}' \
@@ -1452,9 +1456,13 @@ export HEADROOM_STATE_DIR="$TMP/state-ledger"
 mkdir -p "$HEADROOM_STATE_DIR"
 
 trL="$TMP/t_ledger.jsonl"
+# One MCP save + two misses: the MCP-compress discount drops the SMALLEST miss
+# (fillerA), leaving events.json as the surviving, named biggest miss.
 {
   compress_event lg1 500
   printf '{"timestamp":"%s","message":{"model":"claude-opus-4-8","content":[{"type":"text","text":"hi"}]}}\n' "$NOW"
+  jq -n '{message:{content:[{type:"tool_use",id:"lgf1",name:"Read",input:{file_path:"/var/data/fillerA.log"}}]}}'
+  jq -n '{message:{content:[{type:"tool_result",tool_use_id:"lgf1",content:[{type:"text",text:("z"*5000)}]}]}}'
   jq -n '{message:{content:[{type:"tool_use",id:"lgm1",name:"Read",input:{file_path:"/var/data/events.json"}}]}}'
   jq -n '{message:{content:[{type:"tool_result",tool_use_id:"lgm1",content:[{type:"text",text:("z"*9000)}]}]}}'
 } > "$trL"
@@ -1475,8 +1483,13 @@ check "ledger: misses priced"       '"miss_usd"'                "$(cat "$lg" 2>/
 printf '{"session_id":"ledger-s1","transcript_path":"%s"}' "$trL" | bash "$LEDGERH"
 check_eq "ledger: unchanged transcript not re-appended" "1" "$(wc -l < "$lg" | tr -d ' ')"
 
-# growth → a new cumulative snapshot line
-compress_event lg2 700 >> "$trL"
+# growth → a new cumulative snapshot line (2nd compress + a 3rd smaller miss,
+# so with the discount events.json still survives as the biggest miss)
+{
+  compress_event lg2 700
+  jq -n '{message:{content:[{type:"tool_use",id:"lgf2",name:"Read",input:{file_path:"/var/data/fillerC.log"}}]}}'
+  jq -n '{message:{content:[{type:"tool_result",tool_use_id:"lgf2",content:[{type:"text",text:("z"*6000)}]}]}}'
+} >> "$trL"
 printf '{"session_id":"ledger-s1","transcript_path":"%s"}' "$trL" | bash "$LEDGERH"
 check_eq "ledger: grown transcript appends" "2" "$(wc -l < "$lg" | tr -d ' ')"
 check "ledger: snapshot is cumulative" '"save_tokens":1200' "$(tail -1 "$lg")"
@@ -1534,7 +1547,7 @@ rm -f "$HEADROOM_STATE_DIR/offenders"
 
 # sniff: a big extensionless JSON array is gated on structure alone
 sniff_f="$TMP/learn-sniff"
-jq -n '[range(0; 900) | {id:., v:"xxxxxxxxxxxxxxxx"}]' > "$sniff_f"
+mkuniform "$sniff_f"
 out=$(gate_input "$sniff_f" learn-g3 | HCAT_PYTHON="$FENG/python" bash "$GATE")
 check "learn: sniff gates JSON-shaped file" '"permissionDecision":"deny"' "$out"
 out=$(gate_input "$sniff_f" learn-g4 | HCAT_PYTHON="$FENG/python" HCAT_GATE_NO_SNIFF=1 bash "$GATE")
@@ -1593,7 +1606,7 @@ export HEADROOM_STATE_DIR="$TMP/state-v271"
 mkdir -p "$HEADROOM_STATE_DIR"
 
 big44="$TMP/v271-big.json"
-jq -n '[range(0; 900) | {id:., v:"xxxxxxxxxxxxxxxx"}]' > "$big44"
+mkuniform "$big44"
 
 # the rewrite emits an UNQUOTED command word — the shape every attribution
 # surface (dangi/statusline/ledger) recognises as an hcat invocation
@@ -1644,14 +1657,14 @@ check_absent "fix/learn: source file not recorded" "$py44" "$(cat "$HEADROOM_STA
 
 # ...while a JSON-shaped extensionless file still is (sniff), stored canonical
 sn44="$TMP/v271-sniff"
-jq -n '[range(0; 900) | {id:., v:"xxxxxxxxxxxxxxxx"}]' > "$sn44"
+mkuniform "$sn44"
 jq -n --arg fp "$sn44" '{hook_event_name:"PostToolUse", tool_name:"Read",
   session_id:"v271-l2", tool_input:{file_path:$fp}, tool_response:("x"*9000)}' | bash "$DANGI" >/dev/null
 check "fix/learn: sniffed structured file recorded" "$sn44" "$(cat "$HEADROOM_STATE_DIR/offenders" 2>/dev/null)"
 
 # a relative Bash token is recorded canonical so the gate's absolute lookup matches
 rel44="$TMP/v271-rel.json"
-jq -n '[range(0; 900) | {id:., v:"xxxxxxxxxxxxxxxx"}]' > "$rel44"
+mkuniform "$rel44"
 ( cd "$TMP" && jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"v271-l3",
     tool_input:{command:"cat v271-rel.json"}, tool_response:("x"*9000)}' | bash "$DANGI" >/dev/null )
 check "fix/learn: relative token stored canonical" "$rel44" "$(cat "$HEADROOM_STATE_DIR/offenders" 2>/dev/null)"
@@ -1704,6 +1717,149 @@ out=$(env -u HCAT_PYTHON HOME="$TMP/nohome" PATH="$STUB:/usr/bin:/bin" bash "$RO
 check 'fix/toon: comma key quoted in header' '"a,b",n,s' "$out"
 check 'fix/toon: numeric string cell stays quoted' '"7",7' "$out"
 check 'fix/toon: null-looking string stays quoted' '"null"' "$out"
+
+# --- 45. v2.7 F2 review fixes: advice hygiene, ledger durability/accounting,
+# path resolution, Bash true-size parity, shared-lib consolidation
+export HEADROOM_STATE_DIR="$TMP/state-v272"
+mkdir -p "$HEADROOM_STATE_DIR"
+
+# #2 — Dangi advice rejects $/backtick paths (falls back to <path> placeholder)
+danger_dir="$TMP/v272-\$(id)"; mkdir -p "$danger_dir"
+danger_f="$danger_dir/data.json"; mkuniform "$danger_f"
+out=$(jq -n --arg fp "$danger_f" '{hook_event_name:"PostToolUse", tool_name:"Read",
+  session_id:"v272-d1", tool_input:{file_path:$fp}, tool_response:("x"*9000)}' | bash "$DANGI")
+check "fix/advice: metachar path → generic placeholder" 'hcat \"<path>\"' "$out"
+check_absent "fix/advice: metachar path not embedded" 'id)' "$out"
+# a clean path is still named
+clean_f="$TMP/v272-clean.json"; mkuniform "$clean_f"
+out=$(jq -n --arg fp "$clean_f" '{hook_event_name:"PostToolUse", tool_name:"Read",
+  session_id:"v272-d2", tool_input:{file_path:$fp}, tool_response:("x"*9000)}' | bash "$DANGI")
+check "fix/advice: clean path still named" "v272-clean.json" "$out"
+
+# #6 — gate DENY message single-quotes the suggested path (no runnable $(...))
+dgate_dir="$TMP/v272g-\$(id)"; mkdir -p "$dgate_dir"
+dgate_f="$dgate_dir/big.json"; mkuniform "$dgate_f"
+out=$(gate_input "$dgate_f" v272-g1 | HCAT_PYTHON="$FENG/python" bash "$GATE")
+check "fix/gate-deny: path single-quoted" "hcat '" "$out"
+check_absent "fix/gate-deny: no double-quoted metachar command" 'hcat \"'"$dgate_dir" "$out"
+
+# #12 — a relative Bash cat is resolved against the payload cwd, not the hook's
+rel_dir="$TMP/v272-rel"; mkdir -p "$rel_dir"
+rel_f="$rel_dir/r.json"; mkuniform "$rel_f"
+out=$(jq -n --arg cmd "cat r.json" --arg cwd "$rel_dir" '{hook_event_name:"PreToolUse",
+  tool_name:"Bash", session_id:"v272-r1", cwd:$cwd, tool_input:{command:$cmd}}' \
+  | HCAT_PYTHON="$FENG/python" bash "$GATE")
+check "fix/gate-cwd: relative cat resolved against payload cwd" "$rel_dir/r.json" "$out"
+# no payload cwd for a relative token → gate stays silent (no wrong-file rewrite)
+out=$(jq -n --arg cmd "cat r.json" '{hook_event_name:"PreToolUse", tool_name:"Bash",
+  session_id:"v272-r2", tool_input:{command:$cmd}}' | HCAT_PYTHON="$FENG/python" bash "$GATE"); rc=$?
+check_eq "fix/gate-cwd: relative cat with no cwd → silent" "" "$out"
+check_eq "fix/gate-cwd: relative cat with no cwd → exit 0" "0" "$rc"
+
+# AN-2 — Bash cat of an EXTENSIONLESS huge file is stat'd, tiered, and named
+noext_huge="$rel_dir/dump"; head -c 200000 /dev/zero | tr '\0' x > "$noext_huge"
+out=$(jq -n --arg cmd "cat $noext_huge" '{hook_event_name:"PostToolUse", tool_name:"Bash",
+  session_id:"v272-an1", tool_input:{command:$cmd}, tool_response:("x"*9000)}' | bash "$DANGI")
+check "fix/an2: Bash extensionless huge → delegation" "too large to compress in place" "$out"
+check "fix/an2: Bash extensionless huge → true size" "195 KB" "$out"
+check "fix/an2: Bash extensionless huge → names the file" "dump" "$out"
+
+# #4 — a failed ledger append leaves the size-marker stale so the retry re-parses
+led_dir="$TMP/state-v272-led"; mkdir -p "$led_dir"
+trF="$TMP/t_v272_led.jsonl"
+{
+  compress_event lf1 500
+  jq -n '{message:{content:[{type:"tool_use",id:"lfm1",name:"Read",input:{file_path:"/var/data/x.json"}}]}}'
+  jq -n '{message:{content:[{type:"tool_result",tool_use_id:"lfm1",content:[{type:"text",text:("z"*9000)}]}]}}'
+} > "$trF"
+# make the append fail: ledger.jsonl is an unwritable directory
+mkdir -p "$led_dir/ledger.jsonl"
+HEADROOM_STATE_DIR="$led_dir" bash "$LEDGERH" <<EOF
+{"session_id":"v272-lf","transcript_path":"$trF"}
+EOF
+if [ -f "$led_dir/session-v272-lf.ledgersize" ]; then
+  echo "FAIL - fix/ledger: failed append must not mark size handled"; FAIL=$((FAIL+1))
+else
+  echo "ok - fix/ledger: failed append leaves size-marker stale"; PASS=$((PASS+1))
+fi
+# once the append can succeed, the snapshot IS recorded (not stranded)
+rmdir "$led_dir/ledger.jsonl"
+HEADROOM_STATE_DIR="$led_dir" bash "$LEDGERH" <<EOF
+{"session_id":"v272-lf","transcript_path":"$trF"}
+EOF
+check "fix/ledger: retry after writable records the snapshot" "v272-lf" "$(cat "$led_dir/ledger.jsonl" 2>/dev/null)"
+
+# #7 — a blob later MCP-compressed is not priced as a miss (ledger matches badge)
+trM="$TMP/t_v272_mcp.jsonl"
+{
+  # one big output that is ALSO covered by an MCP compress call
+  jq -n '{message:{content:[{type:"tool_use",id:"mm1",name:"Bash",input:{command:"echo hi"}}]}}'
+  jq -n '{message:{content:[{type:"tool_result",tool_use_id:"mm1",content:[{type:"text",text:("q"*9000)}]}]}}'
+  compress_event mm2 700
+} > "$trM"
+export HEADROOM_STATE_DIR="$TMP/state-v272-mcp"; mkdir -p "$HEADROOM_STATE_DIR"
+bash "$LEDGERH" <<EOF
+{"session_id":"v272-mcp","transcript_path":"$trM"}
+EOF
+lgm=$(grep v272-mcp "$HEADROOM_STATE_DIR/ledger.jsonl" 2>/dev/null)
+check "fix/ledger: MCP-compressed blob discounted from misses" '"miss_count":0' "$lgm"
+out=$(badge "$trM" claude-opus-4-8 sess-v272mcp)
+check_absent "fix/badge: same blob not shown as missed" "missed" "$out"
+
+# #5 — Python-tier TOON-lite (<5% engine savings) via a fake headroom shim,
+# so the lossless quoting path is exercised WITHOUT a real engine install.
+REALPY=$(PATH=/usr/bin:/bin:/usr/local/bin command -v python3 2>/dev/null || echo /usr/bin/python3)
+if [ -x "$REALPY" ]; then
+  hshim="$TMP/hshim"; mkdir -p "$hshim/headroom"
+  : > "$hshim/headroom/__init__.py"
+  cat > "$hshim/headroom/compress.py" <<'PYSHIM'
+class _R:
+    def __init__(self, raw):
+        self.messages = [{"content": raw}]
+        self.tokens_before = 1000
+        self.tokens_after = 980   # 2% savings → <5% → TOON-lite fallback path
+def compress(_msgs):
+    return _R(_msgs[0]["content"])
+PYSHIM
+  cat > "$hshim/headroom/paths.py" <<'PYSHIM'
+import os, pathlib
+def workspace_dir():
+    return pathlib.Path(os.environ.get("HEADROOM_WORKSPACE_DIR", "/tmp/hshim-ws"))
+def session_stats_path():
+    return workspace_dir() / "stats.jsonl"
+PYSHIM
+  pywrap="$TMP/hshim-python"
+  printf '#!/bin/sh\nexport PYTHONPATH="%s:${PYTHONPATH:-}"\nexec "%s" "$@"\n' "$hshim" "$REALPY" > "$pywrap"
+  chmod +x "$pywrap"
+  ptoon="$TMP/v272-ptoon.json"
+  jq -n '[range(0; 40) | {"a,b": (tostring), n:., s:"null"}]' > "$ptoon"
+  out=$(HCAT_PYTHON="$pywrap" HEADROOM_WORKSPACE_DIR="$TMP/hshim-ws" bash "$ROOT/bin/hcat" "$ptoon"); rc=$?
+  check_eq "fix/ptoon: python <5% engine path exit 0" "0" "$rc"
+  check "fix/ptoon: python tier used (lossless, not engine-absent)" "toon-lite lossless)" "$out"
+  check_absent "fix/ptoon: not the engine-absent jq tier" "engine absent" "$out"
+  check 'fix/ptoon: comma key quoted' '"a,b",n,s' "$out"
+  check 'fix/ptoon: numeric string quoted' '"7",7' "$out"
+  check 'fix/ptoon: null-looking string quoted' '"null"' "$out"
+  check "fix/ptoon: stats event strategy toon-lite" '"strategy":"toon-lite"' "$(cat "$TMP"/hshim-ws/*.jsonl 2>/dev/null)"
+else
+  echo "skip - python-tier TOON-lite test (no python3)"
+fi
+
+# lib-missing degrade: hooks source a flat sibling; with NO lib present they
+# must still run (exit 0, single JSON decision), features simply off.
+nolib="$TMP/nolib"; mkdir -p "$nolib"
+cp "$ROOT/scripts/dangi-hook.sh" "$ROOT/scripts/hcat-gate.sh" "$ROOT/scripts/session-probe.sh" "$nolib/"
+cp "$ROOT/bin/hcat" "$nolib/hcat"
+chmod +x "$nolib"/*.sh "$nolib/hcat"
+nolib_f="$TMP/nolib-in.json"; mkuniform "$nolib_f"
+out=$(jq -n --arg fp "$nolib_f" '{hook_event_name:"PostToolUse", tool_name:"Read",
+  session_id:"nolib-1", tool_input:{file_path:$fp}, tool_response:("x"*9000)}' \
+  | HEADROOM_STATE_DIR="$TMP/nolib-state" bash "$nolib/dangi-hook.sh"); rc=$?
+check_eq "fix/nolib: dangi still exits 0 without lib" "0" "$rc"
+check "fix/nolib: dangi still nudges without lib" "additionalContext" "$out"
+out=$(gate_input "$nolib_f" nolib-2 | HEADROOM_STATE_DIR="$TMP/nolib-state" HCAT_PYTHON="$FENG/python" bash "$nolib/hcat-gate.sh"); rc=$?
+check_eq "fix/nolib: gate still exits 0 without lib" "0" "$rc"
+check "fix/nolib: gate still gates .json by extension without lib" "deny" "$out"
 
 # --- shellcheck (when available) — warning severity: info-level findings
 # (e.g. SC2016 on intentionally-literal single quotes) don't fail the suite

@@ -21,8 +21,13 @@ set -u
 TOOL="mcp__headroom__headroom_compress"
 HPREFIX="mcp__headroom__"
 NUDGE_BYTES=4096
-STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
 SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)
+# Shared STATE_DIR definition (plugin lib/, or a flat sibling in legacy copies).
+# shellcheck disable=SC1090,SC1091
+for _sl in "$SELF_DIR/lib/headroom-state.sh" "$SELF_DIR/headroom-state.sh"; do
+  [ -f "$_sl" ] && { . "$_sl"; break; }
+done
+[ -n "${STATE_DIR:-}" ] || STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
 
 in=$(cat)
 
@@ -44,6 +49,15 @@ done
 tsize=$(wc -c < "$tp" 2>/dev/null | tr -d ' ') || tsize=""
 case "$tsize" in (*[!0-9]*) tsize="" ;; esac
 szmark="$STATE_DIR/session-$sid.ledgersize"
+# Record "this transcript size is fully handled" — called ONLY at points where
+# nothing is left to retry (nothing to record, snapshot unchanged, or append
+# succeeded). A failed append must NOT mark, so the next Stop/SessionEnd
+# re-parses and retries instead of skipping a stranded snapshot.
+mark_size() {
+  [ -n "$tsize" ] || return 0
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  { printf '%s' "$tsize" > "$szmark"; } 2>/dev/null || true
+}
 if [ -n "$tsize" ] && [ -f "$szmark" ] && [ "$(cat "$szmark" 2>/dev/null)" = "$tsize" ]; then
   exit 0
 fi
@@ -72,7 +86,14 @@ snap=$(jq -crs -L "$JQ_LIB" --arg tool "$TOOL" --arg pfx "$HPREFIX" --argjson mi
       and (is_genuine | not)
       and (((($uidx[.id] // {}).name // "") as $n | (exempt_tools | index($n)) == null))
       and ((.t | length) >= $min))
-      | {id: .id, bytes: (.t | length)})) as $missed
+      | {id: .id, bytes: (.t | length)})) as $missed_raw
+  # Discount the MCP-compress count off the misses, mirroring the statusline
+  # rule missed = big - n: an in-context compress absolves a big blob, so a blob
+  # later fed to headroom_compress must not be priced as a miss here while the
+  # badge counts it as a save. Which blobs were compressed is unknown, so drop
+  # the SMALLEST N — this keeps the biggest offender in top_misses (the invoice
+  # names it) and biases the nudge toward the largest remaining waste.
+  | ($missed_raw | sort_by(.bytes) | .[($mids|length):]) as $missed
   | ($missed | map(. as $m
       | {bytes: $m.bytes,
          path: ((($uidx[$m.id] // {}).src // "")
@@ -88,22 +109,20 @@ snap=$(jq -crs -L "$JQ_LIB" --arg tool "$TOOL" --arg pfx "$HPREFIX" --argjson mi
 ' "$tp" 2>/dev/null) || exit 0
 [ -n "$snap" ] || exit 0
 
-# Remember the size we just parsed so quiet Stop firings skip the parse.
-if [ -n "$tsize" ] && mkdir -p "$STATE_DIR" 2>/dev/null; then
-  { printf '%s' "$tsize" > "$szmark"; } 2>/dev/null || true
-fi
-
-# Nothing to record → no ledger noise for empty sessions.
+# Nothing to record → no ledger noise for empty sessions. This size is fully
+# handled (there is nothing to append), so mark it before exiting.
 sc=$(printf '%s' "$snap" | jq -r '.save_count + .miss_count' 2>/dev/null) || exit 0
-case "$sc" in (*[!0-9]*|""|0) exit 0 ;; esac
+case "$sc" in (*[!0-9]*|""|0) mark_size; exit 0 ;; esac
 
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 
-# Skip when this session's snapshot is unchanged since the last append.
+# Skip when this session's snapshot is unchanged since the last append. The
+# snapshot is already on disk, so this size is handled — mark it (a grown
+# transcript whose content-hash didn't change still shouldn't re-parse).
 marker="$STATE_DIR/session-$sid.ledgermark"
 sum=$(printf '%s' "$snap" | cksum 2>/dev/null | awk '{print $1}') || sum=""
 if [ -n "$sum" ] && [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null)" = "$sum" ]; then
-  exit 0
+  mark_size; exit 0
 fi
 
 # Price with the same data table the badge uses (first substring match wins).
@@ -141,6 +160,9 @@ event=$(printf '%s' "$snap" | jq -c \
       miss_usd: (if $mu == "" then null else $mu end)}' 2>/dev/null) || exit 0
 [ -n "$event" ] || exit 0
 
+# Only mark the transcript size as handled AFTER the append succeeds; a failed
+# append leaves szmark stale so the next Stop/SessionEnd retries this snapshot.
 { printf '%s\n' "$event" >> "$STATE_DIR/ledger.jsonl"; } 2>/dev/null || exit 0
 [ -n "$sum" ] && { printf '%s' "$sum" > "$marker"; } 2>/dev/null
+mark_size
 exit 0

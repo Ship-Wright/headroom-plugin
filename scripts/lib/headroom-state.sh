@@ -34,7 +34,10 @@ sniff_structured() {  # sniff_structured <path> — first 512 bytes look JSON- o
 }
 
 canon_path() {  # canon_path <path> — absolute form (dir resolved), or the input unchanged
-  local d
-  d=$(cd "$(dirname "$1")" 2>/dev/null && pwd) || d=""
+  local dir d
+  dir=$(dirname "$1")
+  case "$dir" in -*) dir="./$dir" ;; esac   # a leading '-' must not read as a cd flag
+  # Unset CDPATH so a user CDPATH can't cd elsewhere and print that dir instead.
+  d=$(unset CDPATH; cd "$dir" 2>/dev/null && pwd) || d=""
   if [ -n "$d" ]; then printf '%s/%s' "$d" "$(basename "$1")"; else printf '%s' "$1"; fi
 }
