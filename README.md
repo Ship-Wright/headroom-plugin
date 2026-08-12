@@ -56,9 +56,11 @@ Every second, it looks at what your Claude session has actually done and updates
 | `○ headroom idle (not compressing yet)` — or `○ headroom idle · 4 big blobs uncompressed` | 🔴 red | headroom hasn't compressed anything yet this session; the count appears when large tool outputs are going uncompressed |
 | `● headroom · ~2.4k tok · $0.01 · 3× \| $1.83 all-time  😴 dangi` | 🟢 green | a compression just happened — tokens saved, **money saved**, how many times, and your all-time total |
 | `○ headroom idle · ~2.4k tok · $0.01 · 3× · 2 missed \| $1.83 all-time  🤖 dangi: 2!` | ⚪ grey | quiet for 60s — dims, but keeps the totals; `· N missed` counts big results beyond what you've compressed |
+| `▲ headroom broken (engine) · run /doctor` | 🟡 yellow | a hook or `hcat` just recorded a real engine failure — takes over the badge until a clean `/doctor` run (or the next successful `hcat`) clears it (v2.7) |
 
 - The **token count is the running total for the whole session** (it adds up every compression).
 - It **resets to red** when you start a brand-new Claude session.
+- **v2.7:** the badge is no longer just idle/active — it also notices when it's *broken*. See [Ambient health](#ambient-health-the-badge-notices-when-its-broken-v27) below.
 
 ## How the money number works
 
@@ -74,8 +76,11 @@ Any tool result of 4 KB or more that wasn't produced by headroom itself. Each co
 
 Dangi is the plugin's real-time detector. The badge tells you what you missed; Dangi catches it **as it happens**:
 
-- the moment a tool spits out ≥ 4 KB that isn't compressed, Dangi whispers to Claude (an in-context nudge, max once a minute) so it can compress right away — and when it can tell which file the output came from (a `cat`/`head` of a `.json/.csv/.log/…`), the nudge **names that file** so the fix is copy-paste (`hcat "<that file>"`), v2.6;
+- the moment a tool spits out ≥ 4 KB that isn't compressed, Dangi whispers to Claude (an in-context nudge, max once a minute) so it can compress right away — and when it can tell which file the output came from (a `Read`'s `file_path`, or a `cat`/`head` of a `.json/.csv/.log/…` in Bash), the nudge **names that file** so the fix is copy-paste (`hcat "<that file>"`), v2.6, now file-aware on the `Read` path too (v2.7);
+- **v2.7 — true size, not payload size:** the platform truncates the hook's own payload to ~10K chars before Dangi ever sees it, so for **whole-file ingests** — a bare `cat`/`hcat` of the file, or a `Read` with no offset/limit — Dangi now `stat`s the file **on disk** and reports/tiers on `max(payload size, file size)` instead of the truncated figure. A file merely *named* in a filter command (`grep ERROR big.log`) or read bounded keeps the payload size — that output really was small. The *trigger* still fires on payload size only — a file that's written but never read still doesn't nudge;
+- **v2.7 — size-tiered advice:** below `DANGI_HUGE_BYTES` (default 131072 bytes / 128 KiB) the nudge is the usual hcat/MCP-compress suggestion; at or above it, Dangi advises **delegation instead of compression** — spawn a disposable subagent to read/analyze the file and return only conclusions or an hcat-compressed digest, since compressing that much content in place would still flood the window;
 - because the nudge is rate-limited, blobs that slip by while Dangi is quiet aren't lost — the next nudge **says how many were missed** in the gap, so batching never hides the backlog (v2.6);
+- **v2.7 — it remembers:** a nudge on a file-backed blob ≥ 4 KB that actually *looks structured* (innate extension, or the same 512-byte sniff the gate uses — a big source file can't get itself compression-gated) also records that file as a learned "offender" (see [Detection that learns](#detection-that-learns-v27) below), so the hcat gate can catch it again later even off the static extension list;
 - if it keeps happening, you get a desktop notification — via `osascript` on macOS, falling back to `notify-send` on Linux (max once per 5 minutes);
 - and he lives at the end of your status line: `😴 dangi` when all is well, `🤖 dangi: 3!` when compression chances are slipping by.
 
@@ -88,11 +93,37 @@ The badge and Dangi are honest, but they share a limit: by the time Claude *coul
 v2.3 adds the **prevention layer**:
 
 - **`hcat <file>`** (shipped in the plugin's `bin/`, on Claude's Bash PATH while the plugin is enabled) compresses a structured file through headroom's local pipeline **before it ever enters context** — you get a compact schema+rows rendering (typically 70 %+ token reduction on JSON) plus a header citing the original path. Need an exact detail later? `Read` the original with an offset/limit — the file on disk is the source of truth. Savings are reported into `headroom_stats`.
-- **The hcat gate** (a plugin PreToolUse hook) catches Claude *about to* raw-read a big (≥ 16 KB) `.json/.jsonl/.ndjson/.csv/.tsv/.log` file — via `Read`, or a bare `cat <file>` in Bash — and redirects it to `hcat`, **once per file per session**; re-reading the same file passes, so it's a redirect, never a wall. If headroom isn't installed the gate stays silent. Kill switch: `HCAT_GATE_OFF=1`.
+- **The hcat gate** (a plugin PreToolUse hook) catches Claude *about to* raw-read a big (≥ 16 KB) structured file. For a `Read`, it still **denies once per file per session** with the exact `hcat` command to run instead; re-Reading the same file passes, so it's a redirect, never a wall. For a bare, single-line `cat <file>` in Bash, **v2.7 rewrites the command in place** (`cat <file>` → `hcat "<file>"`, via `updatedInput`, one shot) instead of denying it — the hcat receipt in the output makes the substitution visible, an `additionalContext` line tells Claude its command was rewritten, and there's no deny→re-plan→retry round trip. (Multiline commands are never touched — rewriting one line would silently drop the others.) Set `HCAT_GATE_NO_REWRITE=1` to restore the old deny-and-suggest behavior for Bash. If headroom isn't installed the gate stays silent. Kill switch: `HCAT_GATE_OFF=1`.
 
 Both ship with the plugin — there is nothing to copy or register.
 
 **v2.4:** the badge finally *sees* hcat. Every `hcat` run leaves a receipt in the transcript (`── hcat: … ~18899 tok → ~9351 tok (50.5% saved)`); the status line now parses those receipts and folds them into the token count, the dollar figure, the `N×` counter, the freshness dot, and the all-time total — passthrough receipts (files hcat couldn't shrink) count as nothing, and a big genuine receipt is never a "missed" blob (it *is* the compression). Before v2.4 the badge only counted `headroom_compress` MCP calls, so a session that saved everything via hcat still read "idle (not compressing yet)". **v2.4.1:** Dangi recognizes receipts too. **v2.5:** receipt attribution is *structural* on both paths — a receipt only counts when the tool result actually came from a Bash command that invoked `hcat`; an output that merely quotes a receipt line (a `grep` over docs, a `cat` of this README) counts as nothing — and, if big, as a missed opportunity.
+
+**v2.7 — hcat works even without the Python engine.** When no engine is found, `hcat` no longer just refuses: it renders a lossless **TOON-lite** table via pure `jq` — a uniform JSON array of same-shaped objects becomes one header row plus CSV-like rows, typically 30–60% smaller, zero extra dependencies — before giving up. The receipt reads `… (NN.N% saved · toon-lite lossless, engine absent) …` and the token figures are ~4-bytes/token estimates (there's no engine tokenizer to ask). Files that aren't a uniform array of flat objects still exit 3 with the old "headroom python not found" message. When the engine *is* installed but its semantic compressor would save less than 5% on a given file, the same TOON-lite reformat is tried in Python before falling back to raw passthrough — receipt `… (NN.N% saved · toon-lite lossless) …`, reported into `headroom_stats` with `strategy:"toon-lite"`. Either way it's only used when it actually saves ≥ 5%; otherwise passthrough stands as before.
+
+## Detection that learns (v2.7)
+
+The hcat gate's static extension list (`.json/.jsonl/.ndjson/.csv/.tsv/.log`) misses extensionless API dumps and mislabeled `.txt` JSON. Two things close that gap without widening the list:
+
+- **Offender memory** — every time Dangi nudges on a file-backed blob whose file is ≥ 4 KB, it appends `<epoch> <path>` to `$STATE_DIR/offenders` (deduped by path, entries older than `HEADROOM_OFFENDER_TTL` seconds — default `1209600`, 14 days — pruned on every write). The hcat gate treats a fresh offender entry as gate-eligible regardless of extension, so a file that burned context once gets caught on its next `Read`/`cat`. The list is plain text — inspect or delete `$STATE_DIR/offenders` to see or reset what's been learned.
+- **Structural sniff** — failing both the extension list and the offender list, the gate reads the first 512 bytes of an eligible-sized file: if the first non-space character is `{`/`[`, or the first two lines carry the same ≥3 comma/tab count, it's treated as structured anyway. Disable with `HCAT_GATE_NO_SNIFF=1`.
+
+## Ambient health: the badge notices when it's broken (v2.7)
+
+Every layer above fails *silently* by design — a hook that prints anything but its one JSON decision breaks every tool call. That's normally fine (headroom missing = the gate stays quiet, hcat missing = passthrough), but it means a **real** breakage — a half-created venv, a broken `HCAT_PYTHON`, a compression that raised — used to look exactly like ordinary idle. v2.7 makes real failures visible:
+
+- Hooks and `hcat` record genuine engine failures (not "never installed" — "resolved and then broken") as `<epoch> <component> <message>` in `$STATE_DIR/last-error`.
+- A fresh entry (under 24h old) takes over the badge: `▲ headroom broken (<component>) · run /doctor`, in yellow, replacing the usual active/idle state.
+- `hcat` clears its own `engine`/`runtime` errors the instant a compression actually succeeds; `/doctor` clears the file on a fully clean run and reports "cleared recorded failure state — badge restored".
+- A new **SessionStart** hook, `scripts/session-probe.sh`, runs a fast subset of the doctor's checks once per session — `jq` present, `hcat` executable, engine python resolvable (existence only; the import itself is checked at use time by the gate/hcat), the bundled price table parses — and stays silent when everything's fine. A genuinely never-installed engine still gets a friendly one-line pointer to `/doctor --fix`; that alone does **not** flip the badge to broken (it's the ordinary idle state, not a breakage).
+
+## Session ledger + next-session invoice (v2.7)
+
+A **Stop/SessionEnd** hook, `scripts/ledger-hook.sh`, walks the transcript with the same structural attribution as the badge and appends one cumulative snapshot per session to `$STATE_DIR/ledger.jsonl`: tokens/dollars saved, plus the big outputs that went uncompressed — count, size, an estimated token cost, and the biggest offenders' paths. A per-session checksum marker keeps a busy session's many `Stop` firings from spamming the file, and a session that neither saved nor missed anything writes nothing.
+
+At the **next** session's start, `session-probe.sh` surfaces the last ledger line once (never twice, even across many sessions) as an invoice:
+
+> 🤖 headroom invoice: last session: saved ~12.4k tok (~$0.06) · 3 big output(s) went uncompressed (~8.2k tok ≈ $0.04 left on the table — biggest: /tmp/report.json)
 
 ---
 
@@ -102,7 +133,7 @@ For the curious — after the Quickstart, here is where everything lives:
 
 | Piece | Where | How it got there |
 |---|---|---|
-| Dangi + the hcat gate | `hooks/hooks.json` inside the plugin | auto-registered while the plugin is enabled |
+| Dangi, the hcat gate, session-probe, the session ledger | `hooks/hooks.json` inside the plugin | auto-registered while the plugin is enabled (SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd) |
 | `hcat` | `bin/hcat` inside the plugin | on Claude's Bash PATH automatically |
 | headroom MCP registration | `.mcp.json` inside the plugin | bundled; the launcher finds your engine |
 | headroom engine (Python) | `~/.headroom-venv` (or your own install) | the doctor bootstraps it with your consent |
@@ -163,6 +194,9 @@ The status-line copy (`~/.claude/headroom-statusline.sh`) stays — that one is 
 **It always says "idle" — why?**
 Most likely the headroom engine isn't installed or the MCP isn't loading. Ask Claude to **run the headroom doctor** — it checks each link in the chain and tells you which one is broken. (Manual check: `mcp__headroom__headroom_compress` should exist in your session's tools.)
 
+**It says "▲ headroom broken" — what now?**
+That's different from idle: a hook or `hcat` recorded a real engine failure in the last 24h (not "never installed" — "resolved and then broken", e.g. a bad `HCAT_PYTHON` or a half-created venv). Run `/doctor` — it explains the specific failure and, once the underlying issue is fixed, clears the recorded state and restores the badge.
+
 **Do I still have to remember to compress things?**
 Less than you used to. The hcat gate redirects big structured-file reads automatically, and Dangi nudges Claude about the rest. The badge is the honest scorekeeper on top.
 
@@ -179,7 +213,7 @@ No. It's a local shell command reading your local session file. The engine runs 
 
 ## Appendix: Manual / legacy install (no plugin)
 
-If you can't (or won't) use the plugin marketplace, the copy-everything-to-`~/.claude` flow still works. Clone this repo, then follow the **legacy fallback installer** at the bottom of `skills/headroom-usage-indicator/SKILL.md` — it copies `statusline.sh`, `dangi-hook.sh`, `hcat-gate.sh`, and `hcat` into `~/.claude/` and registers the hooks in your `settings.json` itself.
+If you can't (or won't) use the plugin marketplace, the copy-everything-to-`~/.claude` flow still works. Clone this repo, then follow the **legacy fallback installer** at the bottom of `skills/headroom-usage-indicator/SKILL.md` — it copies `statusline.sh`, `dangi-hook.sh`, `hcat-gate.sh`, `hcat`, and (v2.7) `session-probe.sh` and `ledger-hook.sh` into `~/.claude/`, and registers all five hook events (SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd) in your `settings.json` itself — the plugin's `hooks/hooks.json` does this automatically, so a legacy install has to do it by hand.
 
 Two honest caveats about the legacy flow:
 
@@ -191,10 +225,10 @@ Do **not** run the legacy installer if the plugin is installed — you'd registe
 ## What's inside
 
 - `skills/headroom-usage-indicator/SKILL.md` — the status-line skill: the merge-aware installer, how the badge works, a common-mistakes table, verification steps, and customization notes.
-- `skills/doctor/SKILL.md` — the doctor: checks `jq`, the engine, the MCP, the hooks, and the status line; fixes what you consent to, including legacy-install cleanup.
-- `hooks/hooks.json` — plugin-native registration for Dangi (PostToolUse) and the hcat gate (PreToolUse).
-- `bin/hcat` — compress-at-the-source, on Claude's PATH while the plugin is enabled.
-- `scripts/` — `statusline.sh`, `dangi-hook.sh`, `hcat-gate.sh`, `doctor.sh`, `mcp-launcher.sh` (the working parts).
+- `skills/doctor/SKILL.md` — the doctor: checks `jq`, the engine, the MCP, the hooks, the status line, and ambient-health state; fixes what you consent to, including legacy-install and project-settings cleanup.
+- `hooks/hooks.json` — plugin-native registration for session-probe (SessionStart), the hcat gate (PreToolUse), Dangi (PostToolUse), and the session ledger (Stop, SessionEnd).
+- `bin/hcat` — compress-at-the-source, on Claude's PATH while the plugin is enabled; falls back to a lossless TOON-lite (jq-only) rendering when the Python engine is absent.
+- `scripts/` — `statusline.sh`, `dangi-hook.sh`, `hcat-gate.sh`, `session-probe.sh`, `ledger-hook.sh`, `doctor.sh`, `mcp-launcher.sh` (the working parts).
 - `data/model-prices.json` — the badge's price table as data; adding a model is an edit here, not a code change.
 - `.mcp.json` — bundled headroom MCP server definition (the launcher finds your engine).
 - `test.sh` — the synthetic-transcript test suite; run it from the repo root.

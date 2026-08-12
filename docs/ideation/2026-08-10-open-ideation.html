@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ideation: headroom-plugin — open sweep</title>
+<style>
+  :root {
+    --bg: #faf9f7;
+    --ink: #1f2430;
+    --muted: #5b6270;
+    --line: #e3e0da;
+    --card: #ffffff;
+    --accent: #0f6f5c;
+    --accent-soft: #e6f2ef;
+    --accent-text: #0b5546;
+    --warn-soft: #fdf0e3;
+    --warn-text: #8a4b0f;
+    --info-soft: #e9eef8;
+    --info-text: #2c4a8a;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .page { max-width: 920px; margin-inline: auto; padding: 48px 28px 24px; }
+  p, li, dd { max-width: 72ch; }
+  h1 { font-size: 1.8em; line-height: 1.25; margin: 6px 0 10px; }
+  h2 { font-size: 1.25em; margin: 44px 0 12px; padding-top: 18px; border-top: 1px solid var(--line); }
+  h3 { font-size: 1.05em; margin: 0 0 6px; }
+  code { font-family: var(--mono); font-size: 0.88em; background: #f0eee9; padding: 1px 5px; border-radius: 4px; }
+  .eyebrow { font-size: 0.72em; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent-text); font-weight: 600; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 4px; }
+  .chip { font-size: 0.78em; padding: 3px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); border: 1px solid #cfe4de; }
+  .chip.neutral { background: #f0eee9; color: var(--muted); border-color: var(--line); }
+  .stats { display: flex; flex-wrap: wrap; gap: 12px; margin: 22px 0 0; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px; min-width: 120px; }
+  .stat b { display: block; font-size: 1.3em; }
+  .stat span { font-size: 0.78em; color: var(--muted); }
+  .jump { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 18px; margin: 14px 0 22px; }
+  .jump ul { margin: 6px 0 0; padding-left: 20px; }
+  .jump li { margin: 3px 0; }
+  a { color: var(--info-text); }
+  article.idea { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px 24px; margin: 18px 0; }
+  .idea-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .idea-head .pills { margin-left: auto; display: flex; gap: 6px; }
+  .pill { font-size: 0.74em; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); background: #f0eee9; color: var(--muted); white-space: nowrap; }
+  .pill.conf-high { background: var(--accent-soft); color: var(--accent-text); border-color: #cfe4de; }
+  .pill.conf-med { background: var(--info-soft); color: var(--info-text); border-color: #d4ddf0; }
+  dl.fields { margin: 12px 0 0; }
+  dl.fields dt { font-size: 0.72em; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 700; margin-top: 12px; }
+  dl.fields dd { margin: 3px 0 0; }
+  .basis { background: var(--info-soft); border-radius: 8px; padding: 10px 14px; }
+  .basis code { background: rgba(255,255,255,0.7); }
+  figure { margin: 16px 0 4px; }
+  figure svg { max-width: 100%; height: auto; display: block; }
+  figcaption { font-size: 0.78em; color: var(--muted); margin-top: 6px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 14px 0 4px; }
+  @media (max-width: 640px) { .cols { grid-template-columns: 1fr; } }
+  .col { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 0.9em; }
+  .col.before { background: var(--warn-soft); }
+  .col.after { background: var(--accent-soft); }
+  .col .label { font-size: 0.75em; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 700; }
+  .col.before .label { color: var(--warn-text); }
+  .col.after .label { color: var(--accent-text); }
+  .col ol { margin: 8px 0 0; padding-left: 20px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 0.9em; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f0eee9; font-size: 0.8em; letter-spacing: 0.06em; text-transform: uppercase; }
+  td:first-child { white-space: nowrap; }
+  footer.composition-signal { margin-top: 48px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 0.78em; color: var(--muted); }
+  .grounding p { margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="eyebrow">Ideation · Open Sweep</div>
+  <h1>Ideation: headroom-plugin — what to build next</h1>
+  <div class="meta">
+    <span class="chip">date: 2026-08-10</span>
+    <span class="chip">topic: headroom-plugin-improvements</span>
+    <span class="chip">mode: repo-grounded</span>
+    <span class="chip neutral">focus: none (surprise-me)</span>
+  </div>
+  <div class="stats">
+    <div class="stat"><b>47</b><span>raw ideas (6 frames)</span></div>
+    <div class="stat"><b>24 + 6</b><span>merged clusters + syntheses</span></div>
+    <div class="stat"><b>7</b><span>survivors</span></div>
+    <div class="stat"><b>17</b><span>cut, with reasons</span></div>
+  </div>
+</header>
+
+<section id="grounding-context" class="grounding">
+  <h2>Grounding Context</h2>
+  <p><strong>Codebase Context.</strong> headroom-plugin instruments an external Python "headroom" compression engine for Claude Code. Components: two plugin-native hooks (<code>scripts/hcat-gate.sh</code>, PreToolUse on Read|Bash; <code>scripts/dangi-hook.sh</code>, PostToolUse on *), the <code>bin/hcat</code> CLI wrapper (compress-at-source with a receipt line + stats event), <code>scripts/statusline.sh</code> (transcript-parsing savings badge priced from <code>data/model-prices.json</code>), <code>scripts/doctor.sh</code> (read-only health check, <code>--fix</code> opt-in), and two conversational skills. Conventions: fail-silent hooks ("MUST always exit 0"), GNU/BSD portability, dual install modes (plugin vs legacy). Known gaps confirmed in-repo: the ~10K-char hook-payload truncation lets the biggest blobs evade Dangi (SKILL.md step 8); the gate's extension allowlist and bare-<code>cat</code> detection are deliberately narrow; test coverage is statusline-only (test.sh, 1264 lines); doctor detects but cannot fix legacy hooks in <code>settings.local.json</code> or project settings; the "counts as compression" attribution logic exists twice (jq in statusline, shell regex in dangi-hook). Release pattern: every v2.5/v2.6 feature merge was followed by a hardening pass citing review findings.</p>
+  <p><strong>External Context</strong> (web research, value: high). The niche is no longer greenfield: Claude Context Mode, Toonify MCP, and CompressMCP all ship compression MCPs — CompressMCP even ships a session-savings status bar, so the badge alone is not a moat. Compression <em>ratios</em> are table stakes. Unclaimed positions the research surfaced: unifying "compress in place" vs "delegate to a sub-agent" (Anthropic's own context-engineering guidance treats sub-agent isolation as the primary lever); TOON-style lossless structural reformatting (30–60% on uniform JSON, stackable, unused here); priced <em>waste</em> (loss framing) rather than priced savings; and team/social framing of savings. In-terminal, in-the-moment feedback remains headroom's distinctive ground vs dashboard-layer cost tools.</p>
+  <p><strong>Process notes.</strong> Learnings search skipped (no <code>docs/solutions/</code> exists). All candidate bases were adversarially checked by a fresh-context verifier that read the repo; one popular premise was refuted (the statusline does <em>not</em> currently compute context-window fill) and several "the data already exists" claims were corrected before ranking.</p>
+</section>
+
+<section id="topic-axes">
+  <h2>Topic Axes</h2>
+  <p>Decomposition skipped — surprise-me mode.</p>
+</section>
+
+<section id="ranked-ideas">
+  <h2>Ranked Ideas</h2>
+  <div class="jump">
+    <span class="eyebrow">Jump to</span>
+    <ul>
+      <li><a href="#idea-1">1. Context-strategy router: compress vs delegate, sized on truth</a></li>
+      <li><a href="#idea-2">2. The gate that answers — rewrite or serve, with a lossless TOON-lite floor</a></li>
+      <li><a href="#idea-3">3. Ambient health: a "broken" badge state + SessionStart micro-doctor</a></li>
+      <li><a href="#idea-4">4. Session invoice + append-only savings ledger (Stop hook)</a></li>
+      <li><a href="#idea-5">5. Detection that learns: offender memory + content sniffing</a></li>
+      <li><a href="#idea-6">6. Golden-test the hooks via a shared fixtures library</a></li>
+      <li><a href="#idea-7">7. Retire legacy install mode — doctor --fix becomes a migrator</a></li>
+    </ul>
+  </div>
+
+  <article class="idea" id="idea-1">
+    <div class="idea-head">
+      <h3>1. Context-strategy router: compress vs delegate, sized on truth</h3>
+      <div class="pills"><span class="pill conf-high">Confidence 80%</span><span class="pill">Complexity Medium</span></div>
+    </div>
+    <dl class="fields">
+      <dt>Description</dt>
+      <dd>Two moves that only work together. First, fix the documented blind spot: Dangi currently sizes <code>.tool_response</code>, which Claude Code truncates (~10K chars) before hooks see it — so the <em>largest</em> blobs evade the nudge. The hook also receives <code>tool_input</code>: for Read it has <code>file_path</code>, and for Bash it already extracts the structured-file token — so <code>stat</code> the named file and trigger on <code>max(response bytes, file bytes)</code>. Second, once true size is known, make the nudge a sized three-way router instead of one-size advice: small → ignore; medium structured → <code>hcat</code>/<code>headroom_compress</code>; huge or non-file-backed → "read it inside a disposable subagent that returns only the compressed text." Finally, credit followed delegations in the badge, so the behavior the plugin recommends stops making the badge look worse.</dd>
+      <dt>Basis</dt>
+      <dd class="basis"><code>direct:</code> <code>dangi-hook.sh:127</code> already emits the subagent option as a trailing clause with no decision rule (verifier-confirmed verbatim); SKILL.md step 8 documents the truncation evasion; <code>dangi-hook.sh:44-48</code> sizes only <code>.tool_response</code> while <code>:119-122</code> already extracts the file path — but only after the size check passed. <code>external:</code> Anthropic context-engineering guidance treats sub-agent isolation as the primary context lever; the research digest found no tool unifying "delegate vs compress."</dd>
+      <dt>Rationale</dt>
+      <dd>This converts the plugin's single admitted real-time weakness into its most differentiated capability, and stakes out the one competitive position the research found unclaimed. It also repairs a live incentive contradiction: today, an agent that follows Dangi's best advice (delegate) earns zero badge credit.</dd>
+      <dt>Downsides</dt>
+      <dd>Attributing subagent reads to a savings number is estimation, not receipt-verified counting — it needs an honest "estimated" treatment to protect the badge's credibility. <code>stat</code> on Bash-extracted paths needs safe handling for non-file-backed output.</dd>
+    </dl>
+    <figure>
+      <svg viewBox="0 0 760 260" role="img" aria-label="Three-way routing by true blob size">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5b6270"/></marker>
+        </defs>
+        <rect x="20" y="95" width="200" height="70" rx="10" fill="#e9eef8" stroke="#d4ddf0"/>
+        <text x="120" y="123" text-anchor="middle" font-size="13" fill="#2c4a8a" font-weight="600">Tool output / file</text>
+        <text x="120" y="143" text-anchor="middle" font-size="11" fill="#2c4a8a">sized by stat(), not truncated payload</text>
+        <line x1="220" y1="115" x2="500" y2="45" stroke="#5b6270" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="220" y1="130" x2="500" y2="130" stroke="#5b6270" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="220" y1="145" x2="500" y2="215" stroke="#5b6270" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="352" y="60" text-anchor="middle" font-size="11" fill="#1f2430" style="paint-order: stroke fill" stroke="#faf9f7" stroke-width="3">small</text>
+        <text x="352" y="122" text-anchor="middle" font-size="11" fill="#1f2430" style="paint-order: stroke fill" stroke="#faf9f7" stroke-width="3">medium, structured</text>
+        <text x="352" y="200" text-anchor="middle" font-size="11" fill="#1f2430" style="paint-order: stroke fill" stroke="#faf9f7" stroke-width="3">huge / past 10K horizon</text>
+        <rect x="505" y="20" width="235" height="46" rx="10" fill="#f0eee9" stroke="#e3e0da"/>
+        <text x="622" y="47" text-anchor="middle" font-size="12" fill="#5b6270">ignore — not worth overhead</text>
+        <rect x="505" y="107" width="235" height="46" rx="10" fill="#e6f2ef" stroke="#cfe4de"/>
+        <text x="622" y="134" text-anchor="middle" font-size="12" fill="#0b5546">hcat / headroom_compress</text>
+        <rect x="505" y="192" width="235" height="46" rx="10" fill="#e6f2ef" stroke="#cfe4de"/>
+        <text x="622" y="212" text-anchor="middle" font-size="12" fill="#0b5546">disposable subagent →</text>
+        <text x="622" y="228" text-anchor="middle" font-size="12" fill="#0b5546">returns compressed text only</text>
+      </svg>
+      <figcaption>Illustrative: one decision rule replaces one-size advice; all three outcomes get counted.</figcaption>
+    </figure>
+  </article>
+
+  <article class="idea" id="idea-2">
+    <div class="idea-head">
+      <h3>2. The gate that answers — rewrite or serve, with a lossless TOON-lite floor</h3>
+      <div class="pills"><span class="pill conf-high">Confidence 75%</span><span class="pill">Complexity Medium</span></div>
+    </div>
+    <dl class="fields">
+      <dt>Description</dt>
+      <dd>The gate currently denies a large read, prints the exact replacement command as prose, and hopes the model complies — spending a full round trip, and leaking raw bytes on retry via the once-per-file escape hatch. Claude Code PreToolUse hooks support <code>updatedInput</code>: for the Bash-<code>cat</code> case, silently rewrite the command to invoke <code>hcat</code> and allow it in one shot. For the Read case (tool type can't be swapped), run hcat on the deny path and embed the compressed rendering + receipt directly in the deny reason — the "denial" <em>is</em> the answer. Underneath both, add a dependency-free jq/awk TOON-style lossless reformatter as hcat's fallback tier (<code>strategy:"toon-lite"</code>): uniform JSON arrays become a header row + CSV-like rows, worth 30–60% with zero semantic risk — so the &lt;5% passthrough dead zone and even engine-less installs still deliver savings.</dd>
+      <dt>Basis</dt>
+      <dd class="basis"><code>direct:</code> <code>hcat-gate.sh:96-98</code> builds the replacement command then discards it as prose; <code>:79-81</code> lets raw bytes through on retry; <code>bin/hcat:93-98</code> prints raw bytes verbatim on passthrough (all verifier-confirmed). <code>external:</code> <code>updatedInput</code> in PreToolUse <code>hookSpecificOutput</code> verified real in Claude Code hook docs; TOON format (30–60% lossless on uniform JSON, stackable with semantic compression).</dd>
+      <dt>Rationale</dt>
+      <dd>Converts the weakest link (model compliance) into a non-issue and halves the token cost of every gated read. The verifier rated this the most concretely feasible synthesis in the set. TOON-lite also fixes the worst onboarding moment: a fresh install with no Python engine currently delivers zero value.</dd>
+      <dt>Downsides</dt>
+      <dd>Silent command rewriting affects user trust and debuggability — it needs a visible receipt so the substitution is never mysterious. Embedding compressed content in a deny reason bumps against reason-size limits and needs testing.</dd>
+    </dl>
+    <div class="cols">
+      <div class="col before">
+        <span class="label">Today: deny and hope</span>
+        <ol>
+          <li>Claude runs <code>cat big.json</code></li>
+          <li>Gate denies, explains what to run instead</li>
+          <li>Claude re-plans, runs <code>hcat big.json</code> (or retries — raw bytes leak)</li>
+          <li>Two round trips; compliance optional</li>
+        </ol>
+      </div>
+      <div class="col after">
+        <span class="label">Proposed: rewrite or serve</span>
+        <ol>
+          <li>Claude runs <code>cat big.json</code></li>
+          <li>Gate rewrites to <code>hcat big.json</code> via <code>updatedInput</code>, allows</li>
+          <li>Compressed output + receipt arrive in one shot</li>
+          <li>No engine? TOON-lite still reformats losslessly</li>
+        </ol>
+      </div>
+    </div>
+  </article>
+
+  <article class="idea" id="idea-3">
+    <div class="idea-head">
+      <h3>3. Ambient health: a "broken" badge state + SessionStart micro-doctor</h3>
+      <div class="pills"><span class="pill conf-high">Confidence 85%</span><span class="pill">Complexity Low</span></div>
+    </div>
+    <dl class="fields">
+      <dt>Description</dt>
+      <dd>The fail-silent hook discipline ("MUST always exit 0, print nothing") means a broken engine, vanished Python, or jq failure makes compression silently stop — and the badge sits on idle-red forever, indistinguishable from "nothing needed compressing." Three small pieces: hooks and hcat write a <code>last-error</code> file to the state dir on internal failure; the statusline renders a distinct <em>broken</em> glyph pointing at <code>/doctor</code> (doctor clears it on a passing run); and a &lt;100ms SessionStart hook runs the fast subset of doctor (jq present, engine resolves, price table parses), staying silent when healthy and injecting one line only on failure. Optionally, restructure doctor as a check registry with <code>--json</code> output so any surface can poll health.</dd>
+      <dt>Basis</dt>
+      <dd class="basis"><code>direct:</code> both hook headers carry the exit-0 discipline (verifier-confirmed); <code>hooks/hooks.json</code> registers only PreToolUse and PostToolUse — no SessionStart entry; hcat has exit codes 3/4 ("python missing" / "compression failed") that nothing surfaces ambiently. <code>external:</code> SessionStart is a real Claude Code hook event (verified).</dd>
+      <dt>Rationale</dt>
+      <dd>An ambient indicator whose failure mode mimics its idle state is the worst possible failure for an ambient product. "How long has compression been broken on your machine without you knowing?" currently has no answer. The state-dir and statusline plumbing already exist — this is small work closing the biggest trust gap.</dd>
+      <dt>Downsides</dt>
+      <dd>SessionStart probes add startup latency budget to every session; the check subset must stay ruthlessly fast. A stale <code>last-error</code> that outlives the actual problem would cry wolf — clearing semantics need care.</dd>
+    </dl>
+  </article>
+
+  <article class="idea" id="idea-4">
+    <div class="idea-head">
+      <h3>4. Session invoice + append-only savings ledger (Stop hook)</h3>
+      <div class="pills"><span class="pill conf-med">Confidence 70%</span><span class="pill">Complexity Medium</span></div>
+    </div>
+    <dl class="fields">
+      <dt>Description</dt>
+      <dd>Add a Stop/SessionEnd hook that walks the session transcript — the untruncated ground truth — and appends one structured JSONL event stream: saves (tagged by attribution kind: hcat first-pass vs MCP-deferred), and <em>priced misses</em> ("this session burned ~$0.42 on 3 uncompressed blobs", with file paths). The statusline's transient <code>missed</code> count graduates into a durable, loss-framed record. Downstream surfaces become trivial consumers of the ledger: a next-session one-line invoice, <code>doctor --audit</code> (reconcile lifetime totals against transcripts — today they're an unverified sum of loose files), and later a weekly/team digest. Note: miss byte-sizes are <em>not</em> currently summed anywhere — the ledger pass adds that tracking.</dd>
+      <dt>Basis</dt>
+      <dd class="basis"><code>direct:</code> <code>hooks/hooks.json</code> has no Stop hook; <code>statusline.sh:172-177</code> shows lifetime totals as an unreconciled <code>awk</code> sum over loose <code>session-*.totals</code> files (verifier-confirmed). <code>external:</code> Stop/SessionEnd hooks receive <code>transcript_path</code> like other events (verified); Opower's loss-framed energy reports are the canonical evidence that pricing waste changes behavior more than pricing savings.</dd>
+      <dt>Rationale</dt>
+      <dd>One schema decision converts the plugin's hardest-won asset (verified attribution) into a reusable data product, closes the truncation gap retroactively (transcripts hold true sizes), and makes the money number auditable — a credibility move no competitor's status bar can match.</dd>
+      <dt>Downsides</dt>
+      <dd>A third hook registration and a new state format to maintain and migrate. Loss framing can guilt users into disabling the badge rather than changing behavior — wording matters. "Would have saved" figures are estimates and must be labeled as such.</dd>
+    </dl>
+    <figure>
+      <svg viewBox="0 0 760 240" role="img" aria-label="Ledger written by hooks, consumed by invoice, audit, digest">
+        <defs>
+          <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5b6270"/></marker>
+        </defs>
+        <rect x="20" y="30" width="180" height="40" rx="8" fill="#f0eee9" stroke="#e3e0da"/>
+        <text x="110" y="55" text-anchor="middle" font-size="12" fill="#5b6270">hcat receipts</text>
+        <rect x="20" y="100" width="180" height="40" rx="8" fill="#f0eee9" stroke="#e3e0da"/>
+        <text x="110" y="125" text-anchor="middle" font-size="12" fill="#5b6270">MCP compress events</text>
+        <rect x="20" y="170" width="180" height="40" rx="8" fill="#f0eee9" stroke="#e3e0da"/>
+        <text x="110" y="189" text-anchor="middle" font-size="12" fill="#5b6270">Stop-hook transcript walk</text>
+        <text x="110" y="203" text-anchor="middle" font-size="11" fill="#5b6270">(true sizes, priced misses)</text>
+        <line x1="200" y1="50" x2="290" y2="105" stroke="#5b6270" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <line x1="200" y1="120" x2="290" y2="120" stroke="#5b6270" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <line x1="200" y1="190" x2="290" y2="135" stroke="#5b6270" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <rect x="295" y="88" width="180" height="64" rx="10" fill="#e6f2ef" stroke="#cfe4de"/>
+        <text x="385" y="114" text-anchor="middle" font-size="12" fill="#0b5546" font-weight="600">JSONL savings ledger</text>
+        <text x="385" y="132" text-anchor="middle" font-size="11" fill="#0b5546">append-only · attributed</text>
+        <line x1="475" y1="105" x2="560" y2="50" stroke="#5b6270" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <line x1="475" y1="120" x2="560" y2="120" stroke="#5b6270" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <line x1="475" y1="135" x2="560" y2="190" stroke="#5b6270" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <rect x="565" y="30" width="175" height="40" rx="8" fill="#e9eef8" stroke="#d4ddf0"/>
+        <text x="652" y="55" text-anchor="middle" font-size="12" fill="#2c4a8a">session invoice</text>
+        <rect x="565" y="100" width="175" height="40" rx="8" fill="#e9eef8" stroke="#d4ddf0"/>
+        <text x="652" y="125" text-anchor="middle" font-size="12" fill="#2c4a8a">doctor --audit</text>
+        <rect x="565" y="170" width="175" height="40" rx="8" fill="#e9eef8" stroke="#d4ddf0"/>
+        <text x="652" y="195" text-anchor="middle" font-size="12" fill="#2c4a8a">weekly / team digest</text>
+      </svg>
+      <figcaption>Illustrative: one append-only schema; every future reporting feature becomes a consumer.</figcaption>
+    </figure>
+  </article>
+
+  <article class="idea" id="idea-5">
+    <div class="idea-head">
+      <h3>5. Detection that learns: offender memory + content sniffing</h3>
+      <div class="pills"><span class="pill conf-med">Confidence 65%</span><span class="pill">Complexity Medium</span></div>
+    </div>
+    <dl class="fields">
+      <dt>Description</dt>
+      <dd>The gate's recognition repertoire is a fixed extension list (<code>json|jsonl|ndjson|csv|tsv|log</code>) duplicated in both hooks; anything extensionless, or read via a pipe, walks past it — by design, because widening the static pattern-match is fragile. Add feedback loops instead. (a) <em>Offender memory:</em> Dangi's file-aware nudge already identifies the exact path that burned context; append it to a learned offender list in the state dir that the gate consults, so any file that hurt once is gated on its next access regardless of extension — with a decay rule so stale entries don't over-block. (b) <em>Content sniff:</em> for large files that fail the extension match, <code>head -c 512</code> and score structure (leading <code>{</code>/<code>[</code>, delimiter density, line-length uniformity) before deciding. (c) Later: per-type observed compression ratios from hcat's stats ledger tune the advice — this leg first requires adding a path/extension field to hcat's event schema, which it currently lacks.</dd>
+      <dt>Basis</dt>
+      <dd class="basis"><code>direct:</code> <code>hcat-gate.sh:38-39</code> extension allowlist and <code>dangi-hook.sh:117-123</code> file-aware path extraction (both verifier-confirmed); the grounding names the narrow-gate misses (<code>cat file | jq</code>) as a stated limitation. <code>reasoned:</code> immune systems work because the infection log feeds the recognition library; here that feedback loop costs one small state file and one extra case-match.</dd>
+      <dt>Rationale</dt>
+      <dd>Closes the narrow-gate gap without widening the fragile static match — the exact reason it was kept narrow. A self-calibrating gate is also a moat: every competitor in the research ships fixed heuristics.</dd>
+      <dt>Downsides</dt>
+      <dd>Learned state introduces new failure modes (stale over-blocking, surprising gate behavior the user didn't configure); needs a visible way to inspect and clear the learned list. Sniffing has false positives on prose-ish files.</dd>
+    </dl>
+  </article>
+
+  <article class="idea" id="idea-6">
+    <div class="idea-head">
+      <h3>6. Golden-test the hooks via a shared fixtures library</h3>
+      <div class="pills"><span class="pill conf-high">Confidence 85%</span><span class="pill">Complexity Low</span></div>
+    </div>
+    <dl class="fields">
+      <dt>Description</dt>
+      <dd>test.sh already contains a purpose-built fixture vocabulary — <code>hook_input</code> (synthetic PostToolUse stdin), <code>gate_input</code> (PreToolUse stdin), <code>compress_event</code>, <code>quote_event</code>/<code>genuine_event</code> (receipt-lookalike vs real) — but it's locked inside a 1264-line statusline-only monolith. Extract <code>test/fixtures.sh</code> and add per-component golden tests for <code>dangi-hook.sh</code>, <code>hcat-gate.sh</code>, <code>doctor.sh</code>, and <code>bin/hcat</code>: deny fires once per file, nudge rate-limits and batches, the hcat-detection regex handles <code>cat file | jq</code>-style edges, doctor verdicts on synthetic settings files. Hooks are ideal test subjects: deterministic stdin-JSON → stdout-JSON, exit-0 programs.</dd>
+      <dt>Basis</dt>
+      <dd class="basis"><code>direct:</code> fixture helper inventory read from test.sh (verifier confirmed the file at 1264 lines with these helpers inline); zero test coverage for the four other executables. <code>reasoned:</code> the repo's own release history — three post-merge hardening passes in v2.5 alone, each citing review findings — is evidence that review-as-test-suite is the expensive path; a fixtures library converts each future finding into a permanent regression test.</dd>
+      <dt>Rationale</dt>
+      <dd>Every other idea in this document touches the hooks; this is the one that makes all of them cheaper and safer to ship. The attribution logic has already drifted once (the v2.4.1 fix) — precisely the class of bug golden tests pin down.</dd>
+      <dt>Downsides</dt>
+      <dd>Pure enablement — no user-visible feature ships from this alone. The refactor of test.sh itself needs care not to break the existing 1264 lines of coverage.</dd>
+    </dl>
+  </article>
+
+  <article class="idea" id="idea-7">
+    <div class="idea-head">
+      <h3>7. Retire legacy install mode — doctor --fix becomes a migrator</h3>
+      <div class="pills"><span class="pill conf-med">Confidence 70%</span><span class="pill">Complexity Medium</span></div>
+    </div>
+    <dl class="fields">
+      <dt>Description</dt>
+      <dd>Doctor openly admits it can only nag about half the legacy surface: "the doctor only edits settings.json; remove them from settings.local.json by hand", and project-level <code>.claude/settings.json</code> files "are not scanned … remove those entries by hand." Two options, in ascending ambition: extend <code>--fix</code> to perform the same jq surgery on <code>settings.local.json</code> and project settings; or declare the next major version plugin-only and turn <code>doctor --fix</code> into a one-shot legacy→plugin migrator (de-register hooks, delete stale copies, verify), after which every dual-mode branch — in scripts, docs, and even Dangi's nudge wording — gets deleted.</dd>
+      <dt>Basis</dt>
+      <dd class="basis"><code>direct:</code> <code>doctor.sh:271</code> and <code>:365</code> quoted above — both verifier-confirmed verbatim. The double-firing-hooks failure mode doctor warns about survives exactly in the surfaces it can't fix.</dd>
+      <dt>Rationale</dt>
+      <dd>Every feature currently pays a two-install-modes tax across scripts, docs, nudge strings, and the test surface. Removal collapses the maintenance matrix and turns doctor from a permanent janitor into a health check for one canonical install.</dd>
+      <dt>Downsides</dt>
+      <dd>Editing <code>settings.local.json</code> and project files is more invasive than the current user-level-only policy — needs explicit consent UX. Retiring legacy mode strands users who can't (or won't) use the plugin marketplace path; needs a deprecation window.</dd>
+    </dl>
+  </article>
+</section>
+
+<section id="rejection-summary">
+  <h2>Rejection Summary</h2>
+  <table>
+    <thead><tr><th>#</th><th>Idea</th><th>Reason Rejected</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Shared attribution library</td><td>Verifier: the two implementations are jq vs shell — "extract one lib" overstates; folded into idea 6's test work and idea 2's refactor instead.</td></tr>
+      <tr><td>2</td><td>content-types.json data file</td><td>Sound, but subsumed by idea 5 — learning lists supersede static data lists; a stepping stone at most.</td></tr>
+      <tr><td>3</td><td>Cache-honest money / cache-read pricing</td><td>Already covered: SKILL.md deliberately prices at the 0.1× cache-read floor and discloses it; the remaining kernel (a determinism check) is too thin to rank.</td></tr>
+      <tr><td>4</td><td>Priced misses ("$ left on the table")</td><td>Merged into idea 4 — the claim that miss byte-sizes are "already computed" was false (only counts are), so it needs the ledger pass anyway.</td></tr>
+      <tr><td>5</td><td>Split real vs claimed savings</td><td>Merged into idea 4 as the ledger's attribution-kind field.</td></tr>
+      <tr><td>6</td><td>Team ledger / Slack digest</td><td>Folded into idea 4 as a downstream consumer; the "competitor moat" claim driving urgency was unverifiable.</td></tr>
+      <tr><td>7</td><td>Budget mode / scarcity-aware enforcement ladder</td><td>Refuted: premise "the statusline already computes context fill" is false — no such metric exists in the code.</td></tr>
+      <tr><td>8</td><td>Context-occupancy badge ("show actual headroom")</td><td>Real gap, but needs new per-model window data plus a new metric; expensive relative to value now — revisit once idea 4's ledger exists.</td></tr>
+      <tr><td>9</td><td>policy.json unifying thresholds + CLAUDE.md sync</td><td>Overstated: only two real in-repo threshold sites; the "2 KB" figure lives in the user's global CLAUDE.md, not this repo.</td></tr>
+      <tr><td>10</td><td>Incremental transcript parsing</td><td>Accurate diagnosis (verifier-confirmed O(transcript) re-parse per render in active sessions) but narrower payoff than the survivors; revisit with observed latency evidence.</td></tr>
+      <tr><td>11</td><td>Delete hardcoded price fallback</td><td>Mischaracterizes the code: the fallback is a documented zero-regression design choice, and doctor already FAILs on a missing/invalid price file.</td></tr>
+      <tr><td>12</td><td>Truncation-horizon probe in doctor</td><td>Infeasible as scoped: doctor runs outside the live hook pipeline and cannot observe platform truncation directly.</td></tr>
+      <tr><td>13</td><td>Repo hygiene (.idea/, stale plan doc)</td><td>Below the meeting-test floor — plain housekeeping, not an idea. (Still worth 2 minutes: delete <code>docs/superpowers/plans/2026-07-13-…md</code>, gitignore <code>.idea/</code>.)</td></tr>
+      <tr><td>14</td><td>Ratio-ledger self-calibration (as standalone)</td><td>hcat's stats event has no path/extension field — the schema gap must be fixed first; demoted to idea 5's third leg.</td></tr>
+      <tr><td>15–17</td><td>Syntheses S2, S3, S5</td><td>Each rested on at least one refuted or weak leg (context-fill premise, "bytes already computed", price-fallback mischaracterization); their sound components survive individually as ideas 4–6.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<footer class="composition-signal">Composed 2026-08-10 by ce-ideate (surprise-me mode, repo-grounded) from live repo grounding + external web research; 6 ideation frames, fresh-context basis verification against the working tree at commit 8549550.</footer>
+
+</div>
+</body>
+</html>

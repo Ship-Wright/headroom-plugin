@@ -16,6 +16,17 @@
 
 set -u
 
+# Ambient-health state shared with the statusline badge: a fresh last-error file
+# flips the badge to "broken" so silent engine failures stop looking like idle.
+# The one shell definition lives in scripts/lib/headroom-state.sh (legacy flat
+# installs keep a sibling copy); a partial copy degrades to a no-op recorder.
+_hb="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)"
+# shellcheck disable=SC1090,SC1091
+for _sl in "$_hb/../scripts/lib/headroom-state.sh" "$_hb/headroom-state.sh"; do
+  [ -f "$_sl" ] && { . "$_sl"; break; }
+done
+type note_error >/dev/null 2>&1 || note_error() { :; }
+
 shebang_interp() {  # shebang_interp <script> — interpreter path from its #! line
   local line rest
   IFS= read -r line < "$1" 2>/dev/null || return 1
@@ -52,12 +63,79 @@ else
   done
 fi
 if [ -z "$PY" ] || [ ! -x "$PY" ]; then
+  # No engine: TOON-lite lossless tier (pure jq) before giving up. A uniform
+  # JSON array (same flat keys per row) renders as one header row + CSV-like
+  # rows — typically 30-60% smaller, lossless, zero dependencies beyond jq —
+  # so a fresh install without the Python engine still delivers savings.
+  if command -v jq >/dev/null 2>&1; then
+    toon=$(jq -r '
+      def scal: (type=="object" or type=="array") | not;
+      # Quote a string cell when it carries CSV specials OR would read back as
+      # a JSON scalar bare ("1", "true", "null") — losslessness means string
+      # 1 and number 1 must stay distinguishable. Keys go through cell too:
+      # a comma-bearing key must not misalign the header.
+      def jsonish: try (fromjson | true) catch false;
+      def cell: if type=="string" then (if test("[,\"\n]") or jsonish then @json else . end) else @json end;
+      if type=="array" and length>1 and all(.[]; type=="object" and (to_entries | all(.value|scal)))
+      then (.[0]|keys_unsorted) as $k
+        | if all(.[]; keys_unsorted == $k)
+          then ($k|map(cell)|join(",")), (.[] | [.[$k[]]] | map(cell) | join(","))
+          else empty end
+      else empty end' "$FILE" 2>/dev/null) || toon=""
+    if [ -n "$toon" ]; then
+      raw_b=$(wc -c < "$FILE" | tr -d ' ')
+      out_b=$(printf '%s\n' "$toon" | wc -c | tr -d ' ')
+      if [ "$out_b" -lt $(( raw_b * 95 / 100 )) ] 2>/dev/null; then
+        lines=$(wc -l < "$FILE" | tr -d ' ')
+        kb=$(LC_ALL=C awk -v b="$raw_b" 'BEGIN{printf "%.1f", b/1024}')
+        tb=$(( raw_b / 4 )); [ "$tb" -gt 0 ] || tb=1   # ~4 bytes/token estimate
+        ta=$(( out_b / 4 )); [ "$ta" -gt 0 ] || ta=1
+        pct=$(LC_ALL=C awk -v b="$tb" -v a="$ta" 'BEGIN{printf "%.1f", (1-a/b)*100}')
+        abs_file=$(cd "$(dirname "$FILE")" 2>/dev/null && pwd)/$(basename "$FILE")
+        printf '── hcat: %s · %s lines · %s KB · ~%s tok → ~%s tok (%s%% saved · toon-lite lossless, engine absent) · original on disk — Read that path (offset/limit) for exact details\n' \
+          "$abs_file" "$lines" "$kb" "$tb" "$ta" "$pct"
+        printf '%s\n' "$toon"
+        exit 0
+      fi
+    fi
+  fi
   echo "hcat: headroom python not found (install headroom, or set HCAT_PYTHON)" >&2
+  # A never-installed engine is the ordinary idle state, NOT a breakage — only
+  # a resolved-but-dead explicit override records a broken badge (PY is
+  # non-empty here exactly when HCAT_PYTHON points at a non-executable).
+  [ -n "$PY" ] && note_error engine "hcat: HCAT_PYTHON is not executable ($PY) — run /doctor"
   exit 3
 fi
 
 HF_HUB_OFFLINE=1 HEADROOM_UPDATE_CHECK=off exec "$PY" - "$FILE" <<'PYEOF'
 import json, os, signal, sys, time
+
+# Mirrors the shell wrapper's STATE_DIR: a fresh last-error file flips the
+# statusline badge to "broken"; a successful compression clears engine errors.
+_STATE_DIR = os.environ.get("HEADROOM_STATE_DIR") or os.path.join(
+    os.environ.get("HOME") or os.environ.get("TMPDIR") or "/tmp",
+    ".claude", "headroom-indicator")
+_LAST_ERROR = os.path.join(_STATE_DIR, "last-error")
+
+def _note_error(component, message):
+    try:
+        os.makedirs(_STATE_DIR, exist_ok=True)
+        msg = " ".join(str(message).split())[:200]
+        with open(_LAST_ERROR, "w") as f:
+            f.write(f"{int(time.time())} {component} {msg}\n")
+    except Exception:
+        pass
+
+def _clear_error():
+    # Only engine-class errors: a working compression proves the engine, not jq
+    # or install wiring, so other components stay until the doctor clears them.
+    try:
+        with open(_LAST_ERROR) as f:
+            parts = f.readline().split(None, 2)
+        if len(parts) >= 2 and parts[1] in ("engine", "runtime"):
+            os.remove(_LAST_ERROR)
+    except Exception:
+        pass
 
 # `hcat big.json | head -1` must die silently when the reader closes the pipe,
 # like cat does — otherwise python's stdout teardown spews BrokenPipeError on
@@ -81,7 +159,9 @@ try:
     result = compress([{"role": "tool", "content": raw}])
 except Exception as e:
     print(f"hcat: compression failed: {e}", file=sys.stderr)
+    _note_error("runtime", f"hcat: compression failed: {e} — run /doctor")
     sys.exit(4)
+_clear_error()
 
 out = result.messages[0].get("content", raw)
 if not isinstance(out, str):
@@ -90,8 +170,81 @@ if not isinstance(out, str):
 before, after = result.tokens_before, result.tokens_after
 saved_pct = round((1 - after / before) * 100, 1) if before else 0.0
 
-# Passthrough when compression buys <5%: schema noise isn't worth it.
+def _append_event(tok_before, tok_after, pct, strategy):
+    # Report savings into headroom's shared session stats (best effort, never fatal).
+    try:
+        from headroom import paths as _paths
+        stats_dir = _paths.workspace_dir()
+        stats_file = _paths.session_stats_path()
+        stats_dir.mkdir(parents=True, exist_ok=True)
+        event = {
+            "type": "compress",
+            "input_tokens": tok_before,
+            "output_tokens": tok_after,
+            "savings_percent": pct,
+            "strategy": strategy,
+            "timestamp": time.time(),
+            "pid": os.getpid(),
+        }
+        line = json.dumps(event, separators=(",", ":")) + "\n"
+        import fcntl
+        with open(stats_file, "a") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(line)
+            fcntl.flock(f, fcntl.LOCK_UN)
+    except Exception:
+        pass
+
+def _toon_lite(text):
+    # Lossless structural reformat for a uniform JSON array of flat objects:
+    # one header row + CSV-like rows. Returns None when the shape doesn't fit.
+    try:
+        data = json.loads(text)
+    except Exception:
+        return None
+    if not isinstance(data, list) or len(data) < 2:
+        return None
+    if not all(isinstance(r, dict) for r in data):
+        return None
+    keys = list(data[0].keys())
+    for r in data:
+        if list(r.keys()) != keys:
+            return None
+        for v in r.values():
+            if isinstance(v, (dict, list)):
+                return None
+    def scalar_like(s):
+        # A bare cell that PARSES as JSON ("1", "true", "null") would lose its
+        # string-ness on the way back — quote it to keep the rendering lossless.
+        try:
+            json.loads(s)
+            return True
+        except Exception:
+            return False
+    def cell(v):
+        if isinstance(v, str) and not any(c in v for c in ',"\n') and not scalar_like(v):
+            return v
+        return json.dumps(v, ensure_ascii=False)
+    # Keys go through cell too: a comma-bearing key must not misalign the header.
+    rows = [",".join(cell(k) for k in keys)]
+    rows += [",".join(cell(r[k]) for k in keys) for r in data]
+    return "\n".join(rows) + "\n"
+
+# When semantic compression buys <5%, try the TOON-lite lossless tier before
+# passing through raw — the dead zone stops being a savings dead zone.
 if before == 0 or saved_pct < 5:
+    t = _toon_lite(raw)
+    if t is not None:
+        tb = max(1, len(raw.encode("utf-8", "replace")) // 4)
+        ta = max(1, len(t.encode("utf-8", "replace")) // 4)
+        if ta <= tb * 0.95:
+            pct = round((1 - ta / tb) * 100, 1)
+            print(f"── hcat: {path} · {lines} lines · {kb:.1f} KB · "
+                  f"~{tb} tok → ~{ta} tok ({pct}% saved · toon-lite lossless) · "
+                  f"original on disk — Read that path (offset/limit) for exact details")
+            print(t, end="" if t.endswith("\n") else "\n")
+            _append_event(tb, ta, pct, "toon-lite")
+            sys.exit(0)
     print(f"── hcat: {path} · {lines} lines · {kb:.1f} KB · passthrough "
           f"(compression would save {saved_pct}%)")
     print(raw, end="" if raw.endswith("\n") else "\n")
@@ -102,27 +255,5 @@ print(f"── hcat: {path} · {lines} lines · {kb:.1f} KB · "
       f"original on disk — Read that path (offset/limit) for exact details")
 print(out, end="" if out.endswith("\n") else "\n")
 
-# Report savings into headroom's shared session stats (best effort, never fatal).
-try:
-    from headroom import paths as _paths
-    stats_dir = _paths.workspace_dir()
-    stats_file = _paths.session_stats_path()
-    stats_dir.mkdir(parents=True, exist_ok=True)
-    event = {
-        "type": "compress",
-        "input_tokens": before,
-        "output_tokens": after,
-        "savings_percent": saved_pct,
-        "strategy": "hcat",
-        "timestamp": time.time(),
-        "pid": os.getpid(),
-    }
-    line = json.dumps(event, separators=(",", ":")) + "\n"
-    import fcntl
-    with open(stats_file, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        f.write(line)
-        fcntl.flock(f, fcntl.LOCK_UN)
-except Exception:
-    pass
+_append_event(before, after, saved_pct, "hcat")
 PYEOF

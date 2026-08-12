@@ -6,10 +6,21 @@
 set -u
 
 TOOL="mcp__headroom__headroom_compress"
+SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)
+# Shared STATE_DIR definition (plugin lib/, or a flat sibling in legacy copies).
+# shellcheck disable=SC1090,SC1091
+for _sl in "$SELF_DIR/lib/headroom-state.sh" "$SELF_DIR/headroom-state.sh"; do
+  [ -f "$_sl" ] && { . "$_sl"; break; }
+done
 # HOME can be unset in hook/statusline environments (set -u would kill us);
 # degrade to a temp-dir state location rather than dying on every render.
-STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
-SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo .)
+[ -n "${STATE_DIR:-}" ] || STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
+# Shared attribution defs (plugin lib/, or a flat sibling in legacy copies).
+# Missing lib → compute() degrades to zeros (idle badge), never an error.
+JQ_LIB=""
+for _jl in "$SELF_DIR/lib" "$SELF_DIR"; do
+  if [ -f "$_jl/attribution.jq" ]; then JQ_LIB="$_jl"; break; fi
+done
 NUDGE_BYTES=4096            # tool results at least this large count as compression candidates
 HPREFIX="mcp__headroom__"   # results of headroom's own tools are never "missed"
 
@@ -89,32 +100,30 @@ n=0; saved=0; last_ts=""; missed=0
 # "big" (they ARE the compression, not a missed opportunity).
 compute() {
   local out big hn hsaved
-  out=$(jq -rs --arg tool "$TOOL" --arg pfx "$HPREFIX" --argjson min "$NUDGE_BYTES" '
-    def txt: (.content | if type=="string" then .
-                         elif type=="array" then ([.[]? | .text? // ""] | join(""))
-                         else "" end);
-    def is_receipt: test("(^|\\n)── hcat: ");
-    def is_hcat_cmd: test("(^|\\n|[|;&]\\s*|[$][(]\\s*|/)hcat(\\s|$)");
-    ([.[]|.message.content[]? | select(.type=="tool_use" and .name==$tool) | .id]) as $mids
-    | ([.[]|.message.content[]? | select(.type=="tool_use" and ((.name // "")|startswith($pfx))) | .id]) as $hpids
-    | ([.[]|.message.content[]? | select(.type=="tool_use" and (.name // "")=="Bash"
-        and ((.input.command? // "") | is_hcat_cmd)) | .id]) as $hcids
-    | ([.[]|.message.content[]? | select(.type=="tool_result")
-        | {id: (.tool_use_id // ""), t: txt}]) as $res
-    | def is_genuine: (.t | is_receipt) and ((.id as $t | $hcids | index($t)) != null);
+  [ -n "$JQ_LIB" ] || return 0
+  out=$(jq -rs -L "$JQ_LIB" --arg tool "$TOOL" --arg pfx "$HPREFIX" --argjson min "$NUDGE_BYTES" '
+    include "attribution";
+    (mcp_ids($tool)) as $mids
+    | idset($mids) as $mset
+    | idset(headroom_ids($pfx)) as $hpset
+    | idset(hcat_bash_ids) as $hcset
+    | idset([tool_uses[] | select((.name // "") as $n | (exempt_tools | index($n)) != null) | .id]) as $eset
+    | tool_results as $res
+    | def is_genuine: (.t | is_receipt) and ($hcset[.id] // false);
       ($res | map(select(is_genuine)
         | (try (.t | capture("~(?<b>[0-9]+) tok → ~(?<a>[0-9]+) tok")) catch null) as $c
         | select($c != null)
         | {id: .id, s: (($c.b|tonumber) - ($c.a|tonumber))})) as $rcpt
-    | ($res | map(select(.id as $t | $mids | index($t))
+    | ($res | map(select($mset[.id] // false)
         | (try (.t | fromjson.tokens_saved) catch 0) // 0) | add // 0) as $saved
-    | ($res | map(select(((.id as $t | $hpids | index($t)) == null)
+    | ($res | map(select((($hpset[.id] // false) | not)
+        and (($eset[.id] // false) | not)
         and (is_genuine | not)
         and ((.t | length) >= $min))) | length) as $big
-    | ($rcpt | map(.id)) as $rids
+    | idset($rcpt | map(.id)) as $ridx
     | ([.[] | select(.timestamp)
         | select(any(.message.content[]?; .type=="tool_use"
-            and (((.name // "") == $tool) or ((.id // "") as $i | ($rids | index($i)) != null))))
+            and (((.name // "") == $tool) or ($ridx[.id // ""] // false))))
         | .timestamp] | max // "") as $last
     | "\($mids|length)|\($saved)|\($big)|\($rcpt|length)|\($rcpt | map(.s) | add // 0)|\($last)"
   ' "$tp" 2>/dev/null)
@@ -183,7 +192,23 @@ if [ "$missed" -gt 0 ] 2>/dev/null; then
   nudge=" · ${missed} missed"
 fi
 
-if [ "$n" -gt 0 ] 2>/dev/null; then
+# Ambient health: hooks/hcat record engine breakage in a last-error file (the
+# fail-silent hook discipline would otherwise make an outage look exactly like
+# idle). A fresh entry (<24h by its own timestamp) takes over the badge; doctor
+# clears the file on a fully-clean run, hcat clears it on a working compression.
+broken=""
+if [ -f "$STATE_DIR/last-error" ]; then
+  { read -r le_ts le_comp _ < "$STATE_DIR/last-error"; } 2>/dev/null || true
+  case "${le_ts:-}" in (*[!0-9]*|"") le_ts=0 ;; esac
+  le_age=$(( $(date -u +%s) - le_ts ))
+  if [ "$le_age" -ge 0 ] 2>/dev/null && [ "$le_age" -le 86400 ] 2>/dev/null; then
+    broken="${le_comp:-engine}"
+  fi
+fi
+
+if [ -n "$broken" ]; then
+  printf '\033[33m▲ headroom broken (%s) · run /doctor\033[0m' "$broken"
+elif [ "$n" -gt 0 ] 2>/dev/null; then
   tok=$(fmt_tok "$saved")
   if [ "$age" -le 60 ] 2>/dev/null; then
     printf '\033[32m● headroom · ~%s tok%s · %s×%s\033[0m' "$tok" "$money" "$n" "$lifetime"
