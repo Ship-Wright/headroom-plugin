@@ -378,6 +378,12 @@ JQEOF
 )
     [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
       && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
+    # statusline.sh resolves attribution.jq + headroom-state.sh from a lib/ dir
+    # next to itself; without them compute() degrades to a permanent idle badge
+    # showing zero savings (issue #2). Provision them alongside the copy.
+    mkdir -p "$CLAUDE_DIR/lib"
+    cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
+    cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" 2>/dev/null || true
     if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_path" && chmod +x "$sl_path" \
        && jq --arg hr "bash \"$sl_path\"" "$sl_merge_jq" \
           "$SETTINGS" > "$TMPD/settings.sl" && cat "$TMPD/settings.sl" > "$SETTINGS"; then
@@ -404,6 +410,9 @@ JQEOF
   elif [ "$FIX" -eq 1 ]; then
     [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
       && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
+    mkdir -p "$CLAUDE_DIR/lib"
+    cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
+    cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" 2>/dev/null || true
     if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_copy" && chmod +x "$sl_copy"; then
       say fixed "statusline copy refreshed from the plugin ($sl_copy)"
     else
@@ -411,6 +420,34 @@ JQEOF
     fi
   else
     say fixable "statusline copy differs from the plugin's scripts/statusline.sh — --fix refreshes it"
+  fi
+
+  # 7c. statusline.sh's runtime deps (attribution.jq + headroom-state.sh) must sit
+  # in a lib/ dir next to the installed copy, or compute() silently degrades to a
+  # permanent idle badge showing zero savings (issue #2). The plain cmp in 7b only
+  # covers the script itself — these are separate files and were never provisioned.
+  if [ ! -f "$sl_copy" ]; then
+    say skip "statusline lib deps (no $sl_copy yet)"
+  else
+    lib_stale=""
+    for f in attribution.jq headroom-state.sh; do
+      if [ ! -f "$CLAUDE_DIR/lib/$f" ] || ! cmp -s "$PLUGIN_ROOT/scripts/lib/$f" "$CLAUDE_DIR/lib/$f"; then
+        lib_stale="$lib_stale $f"
+      fi
+    done
+    if [ -z "$lib_stale" ]; then
+      say ok "statusline lib deps current ($CLAUDE_DIR/lib: attribution.jq, headroom-state.sh)"
+    elif [ "$FIX" -eq 1 ]; then
+      mkdir -p "$CLAUDE_DIR/lib"
+      if cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" \
+         && cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/"; then
+        say fixed "installed statusline lib deps to $CLAUDE_DIR/lib —$lib_stale"
+      else
+        say FAIL "could not copy statusline lib deps to $CLAUDE_DIR/lib"
+      fi
+    else
+      say fixable "statusline lib deps missing/stale —$lib_stale (badge shows zero savings without them; --fix installs attribution.jq + headroom-state.sh)"
+    fi
   fi
 
   # 8. stale pre-plugin copies in ~/.claude (headroom-statusline.sh stays: the

@@ -34,7 +34,7 @@ v2.3 adds the **prevention layer**: `hcat` compresses structured files *at the s
 
 ## How It Works
 
-All logic lives in one shipped script, `scripts/statusline.sh` (in this plugin, two directories above this SKILL.md). The installer copies it to `~/.claude/headroom-statusline.sh` and points `statusLine.command` at it. Per render it:
+All logic lives in one shipped script, `scripts/statusline.sh` (in this plugin, two directories above this SKILL.md). The installer copies it to `~/.claude/headroom-statusline.sh`, provisions its runtime deps (`scripts/lib/attribution.jq` and `scripts/lib/headroom-state.sh`) into `~/.claude/lib/` — the badge silently reads zero without them (issue #2) — and points `statusLine.command` at it. Per render it:
 
 1. Reads the status-line **stdin JSON once** — `transcript_path`, `model.id`, `session_id`.
 2. **Counts & sums** — `tool_use` blocks named `mcp__headroom__headroom_compress`; `tokens_saved` from results linked by `tool_use_id` (never grep for raw strings — `headroom_stats` results and prose mentions are false positives).
@@ -86,6 +86,14 @@ dest = pathlib.Path.home() / ".claude" / "headroom-statusline.sh"
 dest.parent.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(src, dest)
 dest.chmod(0o755)
+
+# statusline.sh resolves attribution.jq + headroom-state.sh from a lib/ dir next
+# to itself; without them the badge is stuck at "idle (not compressing yet)"
+# forever, showing zero savings (issue #2). Provision them alongside the copy.
+lib_dir = pathlib.Path.home() / ".claude" / "lib"
+lib_dir.mkdir(parents=True, exist_ok=True)
+for _lib in ("attribution.jq", "headroom-state.sh"):
+    shutil.copyfile(PLUGIN_ROOT / "scripts" / "lib" / _lib, lib_dir / _lib)
 
 p = pathlib.Path.home() / ".claude" / "settings.json"
 data = json.loads(p.read_text()) if p.exists() else {}
