@@ -64,7 +64,7 @@ Each line is aligned `<status> - <what>`:
   to edit settings or bootstrap around them.
 - `fixable` — the doctor can repair this itself with `--fix`:
   - engine missing → bootstrap `python3 -m venv ~/.headroom-venv` +
-    `pip install headroom`
+    `pip install "headroom-ai[all]"`
   - legacy hook entries → removed from `~/.claude/settings.json`,
     `~/.claude/settings.local.json`, and the current project's
     `.claude/settings.json` / `.claude/settings.local.json` (a timestamped

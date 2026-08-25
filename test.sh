@@ -763,7 +763,7 @@ out=$(env -u HCAT_PYTHON PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$S4" \
 check "fix: reports fixed"        "fixed"   "$out"
 check_eq "fix: exit 0"               "0"       "$rc"
 check "fix: venv created via python3 -m venv" "-m venv $DOCD/venv-boot" "$(cat "$STUB/python3.calls" 2>/dev/null)"
-check "fix: pip install headroom (stubbed)"   "install headroom" "$(cat "$DOCD/venv-boot/pip.calls" 2>/dev/null)"
+check "fix: pip install headroom-ai (stubbed)"   "install headroom-ai[all]" "$(cat "$DOCD/venv-boot/pip.calls" 2>/dev/null)"
 check_eq "fix: legacy hooks removed" "0" \
   "$(jq '[.hooks // {} | to_entries[] | .value[]?.hooks[]? | select((.command // "") | test("dangi-hook|hcat-gate"))] | length' "$S4")"
 check "fix: unrelated hook preserved" "unrelated-hook" "$(cat "$S4")"

@@ -27,7 +27,7 @@ else
   fi
 fi
 if [ -z "$BIN" ]; then
-  echo "headroom engine not found — run the plugin doctor with --fix (/headroom-usage-indicator:doctor), or: python3 -m venv ~/.headroom-venv && ~/.headroom-venv/bin/pip install headroom" >&2
+  echo "headroom engine not found — run the plugin doctor with --fix (/headroom-usage-indicator:doctor), or: python3 -m venv ~/.headroom-venv && ~/.headroom-venv/bin/pip install \"headroom-ai[all]\"" >&2
   exit 1
 fi
 

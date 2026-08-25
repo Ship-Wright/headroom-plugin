@@ -4,7 +4,7 @@
 #
 # Read-only by default: prints aligned ok/FAIL/fixable/skip lines and exits 0
 # iff nothing FAILed. `--fix` applies the repairs reported as fixable:
-#   * engine bootstrap — python3 -m venv ~/.headroom-venv + pip install headroom
+#   * engine bootstrap — python3 -m venv ~/.headroom-venv + pip install "headroom-ai[all]"
 #   * legacy hooks     — remove pre-plugin dangi/gate hook entries from
 #                        settings.json (timestamped .bak written first)
 #   * statusLine       — copy scripts/statusline.sh to ~/.claude/headroom-statusline.sh
@@ -120,7 +120,7 @@ shebang_interp() {  # shebang_interp <script> — interpreter path from its #! l
 PY=""
 HCAT_PY_BROKEN=0
 if [ -n "${HCAT_PYTHON:-}" ]; then
-  if [ -x "$HCAT_PYTHON" ] && "$HCAT_PYTHON" -c 'import headroom' >/dev/null 2>&1; then
+  if [ -x "$HCAT_PYTHON" ] && "$HCAT_PYTHON" -c 'import headroom.compress' >/dev/null 2>&1; then
     PY=$HCAT_PYTHON
   else
     HCAT_PY_BROKEN=1
@@ -130,13 +130,13 @@ else
   for cand in "${HR_CLI:+$(dirname "$HR_CLI")/python}" \
               "$([ -n "$HR_CLI" ] && shebang_interp "$HR_CLI")" \
               "$VENV_DIR/bin/python"; do
-    if [ -n "$cand" ] && [ -x "$cand" ] && "$cand" -c 'import headroom' >/dev/null 2>&1; then
+    if [ -n "$cand" ] && [ -x "$cand" ] && "$cand" -c 'import headroom.compress' >/dev/null 2>&1; then
       PY=$cand; break
     fi
   done
 fi
 if [ -n "$PY" ]; then
-  say ok "engine python: $PY (import headroom works)"
+  say ok "engine python: $PY (import headroom.compress works)"
 elif [ "$HCAT_PY_BROKEN" -eq 1 ] && [ "$FIX" -eq 1 ]; then
   # the override is authoritative, so a bootstrapped venv would never be used:
   # bootstrapping here burns time every run and the check still never turns ok
@@ -145,10 +145,10 @@ elif [ "$FIX" -eq 1 ]; then
   venv_preexisted=0; [ -e "$VENV_DIR" ] && venv_preexisted=1
   if python3 -m venv "$VENV_DIR" >/dev/null 2>&1 \
      && [ -x "$VENV_DIR/bin/pip" ] \
-     && "$VENV_DIR/bin/pip" install headroom >/dev/null 2>&1 \
+     && "$VENV_DIR/bin/pip" install "headroom-ai[all]" >/dev/null 2>&1 \
      && [ -x "$VENV_DIR/bin/python" ] \
-     && "$VENV_DIR/bin/python" -c 'import headroom' >/dev/null 2>&1; then
-    say fixed "engine bootstrapped: python3 -m venv $VENV_DIR + pip install headroom"
+     && "$VENV_DIR/bin/python" -c 'import headroom.compress' >/dev/null 2>&1; then
+    say fixed "engine bootstrapped: python3 -m venv $VENV_DIR + pip install \"headroom-ai[all]\""
   else
     # never leave a half-created venv behind: its bin/python would pass -x
     # checks elsewhere while pip and the headroom package are missing
@@ -156,12 +156,12 @@ elif [ "$FIX" -eq 1 ]; then
     hint=""
     command -v apt-get >/dev/null 2>&1 \
       && hint=" (on Debian/Ubuntu, python3 -m venv needs the python3-venv package: sudo apt install python3-venv)"
-    say FAIL "engine bootstrap failed — try by hand: python3 -m venv $VENV_DIR && $VENV_DIR/bin/pip install headroom$hint"
+    say FAIL "engine bootstrap failed — try by hand: python3 -m venv $VENV_DIR && $VENV_DIR/bin/pip install \"headroom-ai[all]\"$hint"
   fi
 elif [ "$HCAT_PY_BROKEN" -eq 1 ]; then
   say fixable "engine python not found — HCAT_PYTHON is set but broken ($HCAT_PYTHON); unset it or point it at a working python (--fix refuses to bootstrap while it is set)"
 else
-  say fixable "engine python not found — --fix creates $VENV_DIR and pip-installs headroom"
+  say fixable "engine python not found — --fix creates $VENV_DIR and pip-installs headroom-ai"
 fi
 
 # --- 3. bin/hcat + a real smoke compression of a generated ~26 KB JSON
