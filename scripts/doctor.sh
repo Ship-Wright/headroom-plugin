@@ -327,8 +327,9 @@ else
       ''|*[!0-9]*) legacy_local=-1 ;;   # unparseable → scan inconclusive
     esac
     if [ "$legacy_local" -gt 0 ] && [ "$FIX" -eq 1 ]; then
-      cp "$LOCAL_SETTINGS" "$LOCAL_SETTINGS.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
-      if jq "$LEGACY_STRIP_JQ" "$LOCAL_SETTINGS" > "$TMPD/settings.local.new" \
+      if ! cp "$LOCAL_SETTINGS" "$LOCAL_SETTINGS.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null; then
+        say FAIL "could not back up settings.local.json before rewriting it — refusing to overwrite without one"
+      elif jq "$LEGACY_STRIP_JQ" "$LOCAL_SETTINGS" > "$TMPD/settings.local.new" \
          && cat "$TMPD/settings.local.new" > "$LOCAL_SETTINGS"; then
         say fixed "removed $legacy_local legacy hook entries from settings.local.json (backup: settings.local.json.bak.*)"
         legacy_local=0
@@ -361,8 +362,10 @@ else
     if [ "$pl" -eq 0 ]; then
       say ok "no legacy hook registrations in $pj"
     elif [ "$FIX" -eq 1 ]; then
-      cp "$pj" "$pj.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
-      if jq "$LEGACY_STRIP_JQ" "$pj" > "$TMPD/proj.new" && cat "$TMPD/proj.new" > "$pj"; then
+      if ! cp "$pj" "$pj.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null; then
+        proj_legacy=1
+        say FAIL "could not back up $pj before rewriting it — refusing to overwrite without one"
+      elif jq "$LEGACY_STRIP_JQ" "$pj" > "$TMPD/proj.new" && cat "$TMPD/proj.new" > "$pj"; then
         say fixed "removed $pl legacy hook entries from $pj (backup: $pj.bak.*)"
       else
         proj_legacy=1
@@ -428,7 +431,11 @@ else
       else sl_custom_missing=$sl_cand
       fi
     done < <(printf '%s\n' "$sl" | grep -oE "[^\"' ]+")
-    if [ "$sl_present" -eq 1 ] && [ -z "$sl_respelled_raw" ]; then
+    # A present token from one candidate must not mask a co-occurring missing
+    # signal from a DIFFERENT candidate token in the same command -- require
+    # no missing signal was raised by ANY token, not just that ONE resolved.
+    if [ "$sl_present" -eq 1 ] && [ -z "$sl_respelled_raw" ] \
+       && [ "$sl_canonical_missing" -eq 0 ] && [ -z "$sl_custom_missing" ]; then
       say ok "statusLine wired ($sl)"
     elif [ "$sl_seen" -eq 0 ]; then
       say ok "statusLine wired ($sl)"
@@ -461,7 +468,11 @@ else
         elif ! backup_settings; then
           say FAIL "could not back up settings.json before rewriting the '$sl_respelled_raw' wiring — refusing to overwrite without one"
         else
-          sl_new_cmd=${sl//$sl_respelled_raw/$CLAUDE_DIR/headroom-statusline.sh}
+          # Anchor the replace on the closing quote every doctor-generated and
+          # documented hand-wiring uses (bash "<path>") so a global substring
+          # replace can't also mangle an unrelated sibling token that merely
+          # shares this one's prefix (e.g. a coexisting ...headroom-statusline.sh.bak).
+          sl_new_cmd=${sl//$sl_respelled_raw\"/$CLAUDE_DIR/headroom-statusline.sh\"}
           if jq --arg c "$sl_new_cmd" '.statusLine.command = $c' \
               "$SETTINGS" > "$TMPD/settings.sl2" && cat "$TMPD/settings.sl2" > "$SETTINGS"; then
             if [ "$sl_canonical_missing" -eq 1 ]; then
@@ -511,26 +522,31 @@ else
   end
 JQEOF
 )
-    [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
-      && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
-    # statusline.sh resolves attribution.jq + headroom-state.sh from a lib/ dir
-    # next to itself; without them compute() degrades to a permanent idle badge
-    # showing zero savings (issue #2). Provision them alongside the copy.
-    mkdir -p "$CLAUDE_DIR/lib"
-    cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
-    cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" 2>/dev/null || true
     if [ "$sl_bak_ok" -eq 0 ]; then
       say FAIL "could not back up settings.json before wiring the statusLine — refusing to overwrite without one"
-    elif cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_path" && chmod +x "$sl_path" \
-       && jq --arg hr "bash \"$sl_path\"" "$sl_merge_jq" \
-          "$SETTINGS" > "$TMPD/settings.sl" && cat "$TMPD/settings.sl" > "$SETTINGS"; then
-      if [ -n "$sl" ] && ! printf '%s' "$sl" | grep -q "mcp__headroom__headroom_compress"; then
-        say fixed "statusLine merged — your command kept and backed up under _headroomStatusLineBackup, badge appended ($sl_disp)"
-      else
-        say fixed "statusLine wired to $sl_disp (script copied, backup: settings.json.bak.*)"
-      fi
     else
-      say FAIL "could not copy statusline.sh to $sl_path and wire settings.json"
+      # a failed backup must refuse every disk write this fix makes, not just
+      # the final script copy and settings rewrite -- so these stay gated
+      # behind the check above rather than running unconditionally first
+      [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
+        && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
+      # statusline.sh resolves attribution.jq + headroom-state.sh from a lib/ dir
+      # next to itself; without them compute() degrades to a permanent idle badge
+      # showing zero savings (issue #2). Provision them alongside the copy.
+      mkdir -p "$CLAUDE_DIR/lib"
+      cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
+      cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" 2>/dev/null || true
+      if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_path" && chmod +x "$sl_path" \
+         && jq --arg hr "bash \"$sl_path\"" "$sl_merge_jq" \
+            "$SETTINGS" > "$TMPD/settings.sl" && cat "$TMPD/settings.sl" > "$SETTINGS"; then
+        if [ -n "$sl" ] && ! printf '%s' "$sl" | grep -q "mcp__headroom__headroom_compress"; then
+          say fixed "statusLine merged — your command kept and backed up under _headroomStatusLineBackup, badge appended ($sl_disp)"
+        else
+          say fixed "statusLine wired to $sl_disp (script copied, backup: settings.json.bak.*)"
+        fi
+      else
+        say FAIL "could not copy statusline.sh to $sl_path and wire settings.json"
+      fi
     fi
   elif [ -n "$sl" ]; then
     say fixable "statusLine present without the headroom badge — --fix appends it, preserving your command under _headroomStatusLineBackup"
