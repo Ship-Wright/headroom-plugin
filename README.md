@@ -45,6 +45,8 @@ This plugin does **not** compress anything by itself — the actual compression 
 
 The good news: you no longer have to plumb the engine in yourself. The plugin bundles the MCP server registration (its tools appear as `mcp__headroom__headroom_compress` and friends), and if the engine itself is missing, the **doctor** offers to bootstrap it into `~/.headroom-venv`. If headroom is absent and you decline, everything stays politely silent — the badge sits at "idle", the gate lets Reads through — nothing breaks.
 
+> **v2.7.3 — the bundled MCP server actually connects now.** From v2.5 through v2.7.2 the bundled registration was shipped broken: its launcher path carried literal quotes, and because Claude Code spawns an MCP `stdio` command *directly* (no shell ever unwraps quoting), every connection attempt died instantly and `/plugin` showed a ✗ beside headroom. It went unnoticed because anyone with a pre-plugin manual registration in `~/.claude.json` still had the tools from there. If you're upgrading, run **`/headroom-usage-indicator:doctor --fix`** once — it repairs an already-installed broken copy in place (with a backup), and from now on it judges that launcher *exactly as spawned* rather than being fooled by its own quote-stripping.
+
 ## What it does
 
 Every second, it looks at what your Claude session has actually done and updates a small badge in your status line. It reads the real session activity (not guesses), so it can't be fooled — just *looking* at headroom's stats does **not** make it say "active"; only a real compression does.
@@ -140,13 +142,15 @@ For the curious — after the Quickstart, here is where everything lives:
 | headroom engine (Python) | `~/.headroom-venv` (or your own install) | the doctor bootstraps it with your consent |
 | status line | `statusLine` in `~/.claude/settings.json`, pointing at a copy of `scripts/statusline.sh` at `~/.claude/headroom-statusline.sh` (with its `attribution.jq` + `headroom-state.sh` deps in `~/.claude/lib/`) | **the one manual step** — the doctor writes it for you (merge-aware: an existing custom status line is kept and backed up under `_headroomStatusLineBackup`), and provisions the `lib/` deps the badge needs to count savings (v2.7.1) |
 
-If you'd rather wire the status line by hand, the merge-aware installer lives in `skills/headroom-usage-indicator/SKILL.md`; the standalone entry it writes boils down to (with your real home directory in place of `~`):
+If you'd rather wire the status line by hand, the merge-aware installer lives in `skills/headroom-usage-indicator/SKILL.md`; the standalone entry it writes boils down to (with your real home directory in place of `/Users/you` — a `~` inside the quoted path would never be expanded):
 
 ```json
-"statusLine": { "type": "command", "command": "bash \"~/.claude/headroom-statusline.sh\"", "refreshInterval": 1 }
+"statusLine": { "type": "command", "command": "bash \"/Users/you/.claude/headroom-statusline.sh\"", "refreshInterval": 1 }
 ```
 
 If the badge doesn't appear at the bottom right away, type `/statusline` once to refresh — or it'll be there next session.
+
+> **If you hand-wired this before v2.7.3, check your quoting.** Earlier versions of this README showed the path as `bash "~/.claude/headroom-statusline.sh"` — but no shell expands a `~` inside quotes, so that entry could never resolve and the badge silently never rendered. v2.7.3's doctor detects that (in either quote style), reports it, and `--fix` rewrites the entry to an absolute path. An *unquoted* `bash ~/.claude/...` was always fine and is left alone.
 
 ## Updating
 
@@ -158,6 +162,8 @@ New versions arrive through the plugin marketplace:
 ```
 
 The hooks, `hcat`, and the MCP definition update with the plugin — nothing to re-copy. The one exception is the status-line script, which runs from a copy at `~/.claude/headroom-statusline.sh` (plus its `~/.claude/lib/` deps): if a release changes it, ask Claude to run the doctor once and it refreshes the copy and the deps. **Coming from v2.7.0 or earlier, run `/headroom-usage-indicator:doctor --fix` once after updating** — earlier installs never provisioned the badge's `lib/` deps, so it was stuck reporting zero savings until you do ([#2](https://github.com/Abhi902/headroom-plugin/issues/2), fixed in v2.7.1). Legacy (pre-v2.5) manual installs get none of this for free — every update means re-running the installer, which is one more reason to migrate.
+
+**Coming from v2.7.2 or earlier, run `/headroom-usage-indicator:doctor --fix` once too** — v2.7.3 fixes the bundled MCP registration that never connected (see [above](#the-gauge-and-the-engine)), and `--fix` repairs the already-installed broken copy rather than waiting for the next fresh install.
 
 ## Uninstall
 
@@ -194,6 +200,8 @@ The status-line copy (`~/.claude/headroom-statusline.sh`) stays — that one is 
 
 **It always says "idle" — why?**
 Most likely the headroom engine isn't installed or the MCP isn't loading. Ask Claude to **run the headroom doctor** — it checks each link in the chain and tells you which one is broken. (Manual check: `mcp__headroom__headroom_compress` should exist in your session's tools.)
+
+If `/plugin` shows a **✗ beside headroom** and those tools are missing entirely, you're on a version between v2.5 and v2.7.2, where the bundled MCP registration could never connect. Update to v2.7.3 and run **`/headroom-usage-indicator:doctor --fix`** — see [The gauge and the engine](#the-gauge-and-the-engine).
 
 If the engine *is* working and `hcat` is clearly compressing (you see receipts in the transcript) but the badge **still** sits at idle showing zero, the status-line script is missing its runtime deps. The badge runs from a copy at `~/.claude/headroom-statusline.sh` and reads `attribution.jq` + `headroom-state.sh` from `~/.claude/lib/` next to it; without them it silently degrades to zero. Run **`/headroom-usage-indicator:doctor --fix`** — it (re)installs those deps and the badge starts reporting real totals. (Fixed in **v2.7.1** — earlier installs never provisioned them; [#2](https://github.com/Abhi902/headroom-plugin/issues/2).)
 

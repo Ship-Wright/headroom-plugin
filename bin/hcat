@@ -99,7 +99,7 @@ if [ -z "$PY" ] || [ ! -x "$PY" ]; then
       fi
     fi
   fi
-  echo "hcat: headroom python not found (install headroom, or set HCAT_PYTHON)" >&2
+  echo "hcat: headroom python not found (pip install \"headroom-ai[all]\", or set HCAT_PYTHON)" >&2
   # A never-installed engine is the ordinary idle state, NOT a breakage — only
   # a resolved-but-dead explicit override records a broken badge (PY is
   # non-empty here exactly when HCAT_PYTHON points at a non-executable).

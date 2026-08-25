@@ -48,6 +48,12 @@ badge() {  # badge <transcript> <model-id> <session-id> — run the script as Cl
     | bash "$SCRIPT"
 }
 
+badge_at() {  # badge_at <script-path> <transcript> <model-id> <session-id> — render a specific
+  # installed copy (its SELF_DIR is its own dir), so dep resolution (lib/ vs flat) is exercised
+  printf '{"transcript_path":"%s","model":{"id":"%s"},"session_id":"%s"}' "$2" "$3" "$4" \
+    | HEADROOM_STATE_DIR="${5:-$TMP/state-badge-at}" bash "$1"
+}
+
 mkuniform() {  # mkuniform <path> [rows] — a uniform JSON array (gate-eligible by size)
   jq -n --argjson n "${2:-900}" '[range(0; $n) | {id:., v:"xxxxxxxxxxxxxxxx"}]' > "$1"
 }
@@ -684,8 +690,13 @@ chmod +x "$FENG/python" "$FENG/headroom"
 
 # 32a. healthy read-only run against the real engine
 if [ -n "$HEADROOM_PY" ]; then
-  CD1="$DOCD/cd1"; mkdir -p "$CD1"
+  CD1="$DOCD/cd1"; mkdir -p "$CD1/lib"
   S1="$DOCD/s1.json"; doc_settings_wired "$CD1" > "$S1"
+  # a truly-healthy install has the wired script AND its lib deps on disk, not just
+  # a settings.json pointer (see check 7's wired-but-missing guard + 7b/7c)
+  cp "$ROOT/scripts/statusline.sh" "$CD1/headroom-statusline.sh"
+  cp "$ROOT/scripts/lib/attribution.jq"    "$CD1/lib/"
+  cp "$ROOT/scripts/lib/headroom-state.sh" "$CD1/lib/"
   out=$(HCAT_PYTHON="$HEADROOM_PY" DOCTOR_SETTINGS="$S1" DOCTOR_CLAUDE_DIR="$CD1" \
         DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" 2>&1); rc=$?
   check "doctor: healthy engine"          "engine python"   "$out"
@@ -752,7 +763,7 @@ out=$(env -u HCAT_PYTHON PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$S4" \
 check "fix: reports fixed"        "fixed"   "$out"
 check_eq "fix: exit 0"               "0"       "$rc"
 check "fix: venv created via python3 -m venv" "-m venv $DOCD/venv-boot" "$(cat "$STUB/python3.calls" 2>/dev/null)"
-check "fix: pip install headroom (stubbed)"   "install headroom" "$(cat "$DOCD/venv-boot/pip.calls" 2>/dev/null)"
+check "fix: pip install headroom-ai (stubbed)"   "install headroom-ai[all]" "$(cat "$DOCD/venv-boot/pip.calls" 2>/dev/null)"
 check_eq "fix: legacy hooks removed" "0" \
   "$(jq '[.hooks // {} | to_entries[] | .value[]?.hooks[]? | select((.command // "") | test("dangi-hook|hcat-gate"))] | length' "$S4")"
 check "fix: unrelated hook preserved" "unrelated-hook" "$(cat "$S4")"
@@ -857,6 +868,14 @@ check "doctor skill: frontmatter name"     "name: doctor" "$(head -5 "$DSKILL" 2
 check "doctor skill: triggers on breakage" "not working"  "$(cat "$DSKILL" 2>/dev/null)"
 check "doctor skill: runs doctor.sh"       "doctor.sh"    "$(cat "$DSKILL" 2>/dev/null)"
 check "doctor skill: consent before --fix" "consent"      "$(cat "$DSKILL" 2>/dev/null)"
+# docs-parity: Step 3's consent list and the fixable lists must name every --fix
+# mutation — an agent following the skill verbatim must not under-disclose
+check "doctor skill: consent list names the .mcp.json rewrite"       "rewrite the plugin's bundled" "$(cat "$DSKILL" 2>/dev/null)"
+check "doctor skill: consent list names the statusline re-copy"      "re-copy the statusline"       "$(cat "$DSKILL" 2>/dev/null)"
+check "doctor skill: fixable list covers wired-but-missing re-copy"  "wired but script missing"     "$(cat "$DSKILL" 2>/dev/null)"
+check "doctor header: fixable list covers wired-but-missing re-copy" "wired-missing copy"           "$(head -30 "$DOCTOR" 2>/dev/null)"
+check "doctor skill: consent list names the statusLine.command rewrite" "rewrite \`statusLine.command\`" "$(cat "$DSKILL" 2>/dev/null)"
+check "doctor header: header names the statusLine.command rewrite"      "rewrites statusLine.command"    "$(head -30 "$DOCTOR" 2>/dev/null)"
 
 # --- 34. review fixes: badge + hooks
 export HEADROOM_STATE_DIR="$TMP/state-review"
@@ -1233,10 +1252,598 @@ else
   echo "FAIL - f7e: --fix provisions the missing lib deps (issue #2)"; FAIL=$((FAIL+1))
 fi
 
-# F8: .mcp.json quotes CLAUDE_PLUGIN_ROOT exactly like hooks.json does
-check "f8: .mcp.json command quoted like hooks.json" \
-      '"${CLAUDE_PLUGIN_ROOT}"/scripts/mcp-launcher.sh' \
-      "$(jq -r '.mcpServers.headroom.command' "$MCP_JSON")"
+# F7f: dual-layout — statusline.sh resolves its deps from EITHER a lib/ subdir OR
+# flat siblings next to the copy (see scripts/statusline.sh's resolution loop),
+# and the v2.7 legacy full-manual installer provisions them FLAT. A healthy flat
+# install must NOT be reported "missing/stale": that cry-wolf misleads the user
+# and, via a spurious FIXABLE, blocks the ambient-health all-clear (block 9).
+F7F="$REVD/f7f"; mkdir -p "$F7F/cd"
+doc_settings_wired "$F7F/cd" > "$F7F/settings.json"
+cp "$ROOT/scripts/statusline.sh" "$F7F/cd/headroom-statusline.sh"        # copy current
+cp "$ROOT/scripts/lib/attribution.jq"    "$F7F/cd/attribution.jq"        # deps as FLAT siblings,
+cp "$ROOT/scripts/lib/headroom-state.sh" "$F7F/cd/headroom-state.sh"     # not under lib/
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7F/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7F/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check "f7f: flat-layout lib deps reported current" "statusline lib deps current" "$out"
+
+# F7g: a stale lib/ dep must NOT be masked by a current flat sibling. statusline.sh
+# loads lib/ by existence (content-blind) and never falls through, so a stale
+# lib/attribution.jq shadows a current flat one — 7c must report it stale. An
+# OR-of-matches check would wrongly green on the flat match; this is the red-green
+# for the existence-first resolution fix.
+F7G="$REVD/f7g"; mkdir -p "$F7G/cd/lib"
+doc_settings_wired "$F7G/cd" > "$F7G/settings.json"
+cp "$ROOT/scripts/statusline.sh" "$F7G/cd/headroom-statusline.sh"
+printf '# stale\n' > "$F7G/cd/lib/attribution.jq"                 # lib/ attribution present but STALE
+cp "$ROOT/scripts/lib/headroom-state.sh" "$F7G/cd/lib/"          # lib/ headroom-state current
+cp "$ROOT/scripts/lib/attribution.jq"    "$F7G/cd/attribution.jq" # flat attribution current (would-be shadow)
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7G/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7G/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7g: the stale lib/ dep (attribution.jq) is the one flagged" "statusline lib deps missing/stale — attribution.jq" "$out"
+check_absent "f7g: stale-shadowed install not greened"                     "statusline lib deps current"                        "$out"
+
+# F7h: a current lib/ dep is authoritative even when a stale flat sibling exists —
+# statusline.sh loads lib/ first, so 7c must stay "current" (guards against an
+# over-correction that would AND-require every layout to match).
+F7H="$REVD/f7h"; mkdir -p "$F7H/cd/lib"
+doc_settings_wired "$F7H/cd" > "$F7H/settings.json"
+cp "$ROOT/scripts/statusline.sh" "$F7H/cd/headroom-statusline.sh"
+cp "$ROOT/scripts/lib/attribution.jq"    "$F7H/cd/lib/"          # lib/ deps current
+cp "$ROOT/scripts/lib/headroom-state.sh" "$F7H/cd/lib/"
+printf '# stale\n' > "$F7H/cd/attribution.jq"                    # stale flat sibling must be ignored
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7H/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7H/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7h: current lib/ deps stay current despite a stale flat sibling" "statusline lib deps current"       "$out"
+check_absent "f7h: current lib/ not cried wolf over a stale flat sibling"        "statusline lib deps missing/stale" "$out"
+
+# F7i: the flat-sibling branch must currency-check, not just test existence — a
+# stale flat dep with no lib/ copy must still report "missing/stale" (guards a
+# regression that accepts a flat sibling merely because it exists, silently
+# reintroducing issue #2's zero-savings badge).
+F7I="$REVD/f7i"; mkdir -p "$F7I/cd"
+doc_settings_wired "$F7I/cd" > "$F7I/settings.json"
+cp "$ROOT/scripts/statusline.sh" "$F7I/cd/headroom-statusline.sh"
+printf '# stale\n' > "$F7I/cd/attribution.jq"                    # flat siblings present but STALE,
+printf '# stale\n' > "$F7I/cd/headroom-state.sh"                 # and no lib/ copies at all
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7I/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7I/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7i: both stale flat deps named" "statusline lib deps missing/stale — attribution.jq headroom-state.sh" "$out"
+check_absent "f7i: stale flat deps not greened" "statusline lib deps current"                                       "$out"
+
+# F7j: wired-but-missing — settings.json points at headroom-statusline.sh but the
+# script isn't on disk. check 7 must report this fixable (not a silent "wired" ok
+# that lets block 9 clear the broken-badge flag); --fix must re-copy the script.
+F7J="$REVD/f7j"; mkdir -p "$F7J/cd"
+doc_settings_wired "$F7J/cd" > "$F7J/settings.json"              # wired, but NO script copied
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7J/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7J/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7j: wired-but-missing script reported fixable" "but the script is missing — --fix re-copies it" "$out"
+check_absent "f7j: wired-but-missing not silently wired-ok"   "statusLine wired ("                              "$out"
+HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7J/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7J/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+if cmp -s "$ROOT/scripts/statusline.sh" "$F7J/cd/headroom-statusline.sh"; then
+  echo "ok - f7j: --fix re-copies the missing statusline script"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7j: --fix re-copies the missing statusline script"; FAIL=$((FAIL+1))
+fi
+
+# F7k: badge OUTCOME, not just the doctor's report string — pins statusline.sh's dep
+# resolution against drift from doctor 7c (they are two implementations of the same
+# lib/-then-flat rule). A copy WITHOUT its deps must degrade to idle (issue #2's
+# symptom); a copy WITH them, under lib/ OR as flat siblings, must render real savings.
+F7K="$REVD/f7k"; mkdir -p "$F7K/nolib" "$F7K/libdir/lib" "$F7K/flat"
+cp "$ROOT/scripts/statusline.sh" "$F7K/nolib/headroom-statusline.sh"          # no deps at all
+cp "$ROOT/scripts/statusline.sh" "$F7K/libdir/headroom-statusline.sh"
+cp "$ROOT/scripts/lib/attribution.jq" "$ROOT/scripts/lib/headroom-state.sh" "$F7K/libdir/lib/"
+cp "$ROOT/scripts/statusline.sh" "$F7K/flat/headroom-statusline.sh"
+cp "$ROOT/scripts/lib/attribution.jq" "$ROOT/scripts/lib/headroom-state.sh" "$F7K/flat/"
+out=$(badge_at "$F7K/nolib/headroom-statusline.sh" "$TMP/t_active.jsonl" claude-opus-4-8 sess-f7k-nolib "$F7K/st-nolib")
+check        "f7k: lib-less copy degrades to idle (issue #2 symptom)" "not compressing yet" "$out"
+check_absent "f7k: lib-less copy shows no savings"                    "~500 tok"            "$out"
+out=$(badge_at "$F7K/libdir/headroom-statusline.sh" "$TMP/t_active.jsonl" claude-opus-4-8 sess-f7k-lib "$F7K/st-lib")
+check "f7k: deps under lib/ render real savings"       "~500 tok" "$out"
+out=$(badge_at "$F7K/flat/headroom-statusline.sh" "$TMP/t_active.jsonl" claude-opus-4-8 sess-f7k-flat "$F7K/st-flat")
+check "f7k: deps as flat siblings render real savings" "~500 tok" "$out"
+
+# F7l: block 9 must KEEP a recorded failure whenever the run is not clean — including
+# when the ONLY issue is a FIXABLE (wired-but-missing script) and FAILED=0. Guards a
+# regression that gates block 9 on FAILED alone: it would clear the broken-badge flag
+# while the statusline script is still absent (the silent pass F7j's check-7 fix
+# prevents). Needs a real engine so the smoke passes (FAILED=0), leaving the
+# wired-but-missing FIXABLE as the sole non-ok.
+if [ -n "$HEADROOM_PY" ]; then
+  F7L="$REVD/f7l"; mkdir -p "$F7L/cd" "$F7L/state"
+  doc_settings_wired "$F7L/cd" > "$F7L/settings.json"              # wired, script absent -> FIXABLE
+  printf 'engine boom\n' > "$F7L/state/last-error"                # seed a recorded failure
+  out=$(HCAT_PYTHON="$HEADROOM_PY" STATE_DIR="$F7L/state" HEADROOM_STATE_DIR="$F7L/state" \
+        DOCTOR_SETTINGS="$F7L/settings.json" DOCTOR_CLAUDE_DIR="$F7L/cd" \
+        DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" 2>&1)
+  check "f7l: block 9 keeps the failure state while a fixable remains" "recorded failure state kept" "$out"
+  if [ -f "$F7L/state/last-error" ]; then
+    echo "ok - f7l: last-error preserved (badge stays broken until a clean run)"; PASS=$((PASS+1))
+  else
+    echo "FAIL - f7l: last-error preserved (badge stays broken until a clean run)"; FAIL=$((FAIL+1))
+  fi
+else
+  echo "skip - f7l block-9 keep test (headroom venv not found)"
+fi
+
+# F7m: a headroom-statusline.sh wired at a NON-canonical (hand-edited) path is the
+# user's to own — check 7 must trust it (ok), not cry wolf or drop an orphan copy at
+# $CLAUDE_DIR. Guards the canonical-path guard; fails against a hardcoded
+# $CLAUDE_DIR existence check that ignores where the command actually points.
+# Deps are provisioned too so this is a genuinely fully-healthy custom install
+# end to end — 7b/7c now also follow the custom path (finding #2's fix) and
+# would otherwise FAIL here, which this fixture's own assertions never checked
+# either way; asserting "current" pins that a healthy custom install is
+# doctor-clean, not just that check 7 alone trusts it. (An UNhealthy custom
+# install, deps missing/stale, is covered separately by F7p.)
+F7M="$REVD/f7m"; mkdir -p "$F7M/cd" "$F7M/custom/lib"
+cp "$ROOT/scripts/statusline.sh" "$F7M/custom/headroom-statusline.sh"          # wired HERE, present
+cp "$ROOT/scripts/lib/attribution.jq" "$ROOT/scripts/lib/headroom-state.sh" "$F7M/custom/lib/"
+jq -n --arg c "$F7M/custom/headroom-statusline.sh" \
+  '{statusLine:{type:"command",command:("bash \"" + $c + "\"")}}' > "$F7M/settings.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7M/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7M/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7m: custom-path statusLine trusted (ok, not cried wolf)" "statusLine wired ("        "$out"
+check_absent "f7m: custom-path statusLine not flagged fixable"          "but the script is missing" "$out"
+check        "f7m: 7b also reports the custom copy current, not just check 7" "statusline copy is current" "$out"
+check_absent "f7m: 7b doesn't cry wolf over a current custom copy either"     "is stale"                    "$out"
+check        "f7m: a fully-healthy custom install is doctor-clean end to end (7c too)" "statusline lib deps current" "$out"
+check_absent "f7m: a fully-healthy custom install isn't cried wolf over by 7c"         "missing/stale"              "$out"
+HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7M/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7M/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+if [ ! -f "$F7M/cd/headroom-statusline.sh" ]; then
+  echo "ok - f7m: --fix drops no orphan copy at the canonical path"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7m: --fix drops no orphan copy at the canonical path"; FAIL=$((FAIL+1))
+fi
+
+# F7n: the wired-but-missing guard must catch ANY spelling of a missing script,
+# not just the literal $HOME-expanded canonical string. Two respellings that
+# previously fell through to a trust-only "statusLine wired" ok with the script
+# absent (letting block 9 clear a recorded failure — the same silent pass the
+# canonical guard closes): (a) the quoted-tilde canonical form README shows for
+# hand wiring — canonical once ~ is expanded, so it takes the fixable/re-copy
+# branch; (b) a foreign-home absolute path synced from another machine's
+# dotfiles — not ours to re-copy (no-orphan policy), so it is a FAIL, not ok.
+F7N="$REVD/f7n"; mkdir -p "$F7N/home/.claude"
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash \"~/.claude/headroom-statusline.sh\"","refreshInterval":1}}' > "$F7N/settings.json"
+out=$(HOME="$F7N/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7N/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7N/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7n: tilde-spelled canonical wiring with missing script is fixable" "but the script is missing" "$out"
+check_absent "f7n: tilde-spelled missing wiring not trusted as ok"                "statusLine wired ("        "$out"
+HOME="$F7N/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7N/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7N/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+if cmp -s "$ROOT/scripts/statusline.sh" "$F7N/home/.claude/headroom-statusline.sh"; then
+  echo "ok - f7n: --fix re-copies the script the tilde wiring points at"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7n: --fix re-copies the script the tilde wiring points at"; FAIL=$((FAIL+1))
+fi
+F7NB="$REVD/f7n-b"; mkdir -p "$F7NB/cd"
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash \"/nonexistent-olduser/.claude/headroom-statusline.sh\"","refreshInterval":1}}' > "$F7NB/settings.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7NB/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7NB/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7n: foreign-home wiring with missing script is a FAIL" "no such file exists" "$out"
+check_absent "f7n: foreign-home missing wiring not trusted as ok"     "statusLine wired ("  "$out"
+HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7NB/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7NB/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+if [ ! -f "$F7NB/cd/headroom-statusline.sh" ]; then
+  echo "ok - f7n: --fix drops no orphan for a foreign-home wiring"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7n: --fix drops no orphan for a foreign-home wiring"; FAIL=$((FAIL+1))
+fi
+
+# F7o: F7n proved --fix copies the file for a tilde-spelled canonical wiring,
+# but never proved the badge would actually WORK afterward. Bash never
+# tilde-expands a ~ inside double quotes, so `bash "~/.claude/headroom-statusline.sh"`
+# (the exact form the pre-fix README showed for hand wiring) never resolves at
+# render time — copying the file alone leaves the command permanently broken.
+# --fix must also rewrite statusLine.command to the resolved absolute path.
+F7O="$REVD/f7o"; mkdir -p "$F7O/home/.claude"
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash \"~/.claude/headroom-statusline.sh\"","refreshInterval":1}}' > "$F7O/settings.json"
+HOME="$F7O/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7O/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7O/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+F7O_CMD=$(jq -r '.statusLine.command' "$F7O/settings.json")
+check_absent "f7o: --fix rewrites away the unexpandable quoted tilde" '~' "$F7O_CMD"
+check "f7o: --fix points the command at the resolved absolute path" "$F7O/home/.claude/headroom-statusline.sh" "$F7O_CMD"
+if HOME="$F7O/home" sh -c "$F7O_CMD" < /dev/null >/dev/null 2>"$F7O/run.err"; then
+  echo "ok - f7o: the rewired command actually runs (proves the badge would render, not just that the file exists)"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7o: the rewired command actually runs (proves the badge would render, not just that the file exists)"; FAIL=$((FAIL+1))
+  cat "$F7O/run.err" >&2
+fi
+F7O="$REVD/f7o-lit"; mkdir -p "$F7O/cd"
+printf '%s\n' "{\"statusLine\":{\"type\":\"command\",\"command\":\"bash \\\"$F7O/cd/headroom-statusline.sh\\\"\",\"refreshInterval\":1}}" > "$F7O/settings.json"
+HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7O/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7O/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+check_eq "f7o: an already-literal canonical wiring is left untouched (no gratuitous settings.json backup)" "0" \
+         "$(ls "$F7O"/settings.json.bak.* 2>/dev/null | wc -l | tr -d ' ')"
+
+# F7p: check 7 was taught to trust a doctor-blessed custom-path statusLine
+# install (F7m), but 7b/7c both hardcoded $CLAUDE_DIR for currency checks —
+# a custom install's stale/missing script or deps went undetected forever
+# (`skip`, not FAILED/FIXABLE), so a broken custom-path badge cleared any
+# recorded failure just the same as a healthy one (issue #2's symptom, for
+# the custom-path population). 7b/7c must now follow whatever path check 7
+# actually validated, and must FAIL (not fixable — no-orphan policy) rather
+# than silently skip.
+F7P="$REVD/f7p"; mkdir -p "$F7P/cd" "$F7P/custom"
+cp "$ROOT/scripts/statusline.sh" "$F7P/custom/headroom-statusline.sh"   # current script, deps never provisioned
+jq -n --arg c "$F7P/custom/headroom-statusline.sh" \
+  '{statusLine:{type:"command",command:("bash \"" + $c + "\"")}}' > "$F7P/settings.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7P/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7P/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7p: custom-path install with missing deps is a FAIL, not silently skipped" \
+             "statusline lib deps at $F7P/custom missing/stale" "$out"
+check_absent "f7p: custom-path missing deps not skipped"        "statusline lib deps (no"  "$out"
+fix_out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7P/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7P/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix 2>&1)
+check_absent "f7p: --fix will not write into a custom-path install (no-orphan policy)" \
+             "installed statusline lib deps" "$fix_out"
+if [ ! -f "$F7P/custom/lib/attribution.jq" ] && [ ! -f "$F7P/cd/lib/attribution.jq" ]; then
+  echo "ok - f7p: --fix drops no dep copies anywhere for a custom-path install"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7p: --fix drops no dep copies anywhere for a custom-path install"; FAIL=$((FAIL+1))
+fi
+# healthy custom install (deps present and current) must report ok, not skip
+F7P2="$REVD/f7p2"; mkdir -p "$F7P2/cd" "$F7P2/custom/lib"
+cp "$ROOT/scripts/statusline.sh" "$F7P2/custom/headroom-statusline.sh"
+cp "$ROOT/scripts/lib/attribution.jq" "$ROOT/scripts/lib/headroom-state.sh" "$F7P2/custom/lib/"
+jq -n --arg c "$F7P2/custom/headroom-statusline.sh" \
+  '{statusLine:{type:"command",command:("bash \"" + $c + "\"")}}' > "$F7P2/settings.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7P2/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7P2/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check "f7p: a healthy, fully-provisioned custom-path install now reports current, not skip" \
+      "statusline lib deps current" "$out"
+
+# F7q: the path-token extraction must operate on whole quote/space-delimited
+# tokens, structurally anchored at both ends, not a substring regex with no
+# token boundary. Two prior failure directions from the unanchored version:
+# (a) front misalignment — grep's leftmost-longest match on a variable-prefixed
+# wiring like `bash "$HOME/.claude/headroom-statusline.sh"` starts at the '/'
+# before .claude (the first '/' in the string), extracting the bogus
+# `/.claude/headroom-statusline.sh` and false-FAILing a perfectly healthy
+# install; (b) suffix truncation — a token like `...headroom-statusline.sh.bak`
+# gets matched only up to the fixed `.sh` suffix, so if a canonical copy also
+# happens to exist, check 7 verifies the WRONG file and never notices the real
+# (suffixed) one is unparseable — it must fall through to the documented
+# no-extractable-token trust rule instead of fabricating a fixable/FAIL verdict
+# against a candidate nobody actually wired.
+F7Q="$REVD/f7q"; mkdir -p "$F7Q/cd"
+cp "$ROOT/scripts/statusline.sh" "$F7Q/cd/headroom-statusline.sh"   # healthy, current, real install
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash \"$HOME/.claude/headroom-statusline.sh\"","refreshInterval":1}}' > "$F7Q/settings.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7Q/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7Q/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check_absent "f7q: a \$HOME-variable-prefixed wiring is not false-FAILed by a misaligned extraction" \
+             "no such file exists" "$out"
+
+F7Q2="$REVD/f7q2"; mkdir -p "$F7Q2/cd"
+# no canonical copy on disk at all — only the file the command actually names
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash \"~/.claude/headroom-statusline.sh.bak\"","refreshInterval":1}}' > "$F7Q2/settings.json"
+out=$(HOME="$F7Q2" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7Q2/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7Q2/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check_absent "f7q: a suffixed filename is not truncated into a fabricated fixable claim about the canonical name" \
+             "fixable" "$out"
+check_absent "f7q: a suffixed filename is not truncated into a fabricated FAIL about the canonical name" \
+             "but no such file exists" "$out"
+
+# F7r: the present-file short-circuit must not trust a quoted-tilde wiring
+# just because the canonical file happens to already exist on disk (e.g. from
+# an earlier, separate install step) -- bash never expands a ~ inside double
+# quotes, so the wired command can never resolve it regardless of whether the
+# file is there. F7o proved the fix for the file-MISSING case; this proves it
+# for the file-ALREADY-PRESENT case, which the present-file short-circuit
+# (doctor.sh's `sl_present -eq 1` branch) previously trusted unconditionally.
+F7R="$REVD/f7r"; mkdir -p "$F7R/home/.claude"
+cp "$ROOT/scripts/statusline.sh" "$F7R/home/.claude/headroom-statusline.sh"   # already present, current
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash \"~/.claude/headroom-statusline.sh\"","refreshInterval":1}}' > "$F7R/settings.json"
+out=$(HOME="$F7R/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7R/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7R/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check_absent "f7r: an unexpandable quoted-tilde wiring is not trusted ok just because the file already exists" \
+             "statusLine wired (" "$out"
+check "f7r: it is reported fixable instead, naming why" "can never resolve" "$out"
+HOME="$F7R/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7R/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7R/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+F7R_CMD=$(jq -r '.statusLine.command' "$F7R/settings.json")
+check_absent "f7r: --fix rewrites away the tilde even though the script was already present" '~' "$F7R_CMD"
+if HOME="$F7R/home" sh -c "$F7R_CMD" < /dev/null >/dev/null 2>"$F7R/run.err"; then
+  echo "ok - f7r: the rewired command actually runs"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7r: the rewired command actually runs"; FAIL=$((FAIL+1))
+  cat "$F7R/run.err" >&2
+fi
+check_eq "f7r: exactly one settings.json backup written" "1" \
+         "$(ls "$F7R"/settings.json.bak.* 2>/dev/null | wc -l | tr -d ' ')"
+
+# F7s: settings.json's own backup must gate the destructive statusLine.command
+# rewrite the same way .mcp.json's does (F8c) -- a swallowed backup failure
+# followed by a rewrite would claim a backup that was never created.
+if [ "$(id -u)" -ne 0 ]; then
+  F7S="$REVD/f7s"; mkdir -p "$F7S/home/.claude" "$F7S/settingsdir"
+  cp "$ROOT/scripts/statusline.sh" "$F7S/home/.claude/headroom-statusline.sh"   # already present, respelled wiring
+  printf '%s\n' '{"statusLine":{"type":"command","command":"bash \"~/.claude/headroom-statusline.sh\"","refreshInterval":1}}' > "$F7S/settingsdir/settings.json"
+  chmod 666 "$F7S/settingsdir/settings.json"   # the file itself stays writable in place
+  chmod 555 "$F7S/settingsdir"                 # but the directory cannot gain new entries (no backup possible)
+  out=$(HOME="$F7S/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7S/settingsdir/settings.json" \
+        DOCTOR_CLAUDE_DIR="$F7S/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix 2>&1)
+  chmod 755 "$F7S/settingsdir"                 # restore before any cleanup/further use
+  check "f7s: a settings.json backup failure refuses the statusLine.command rewrite" "could not back up settings.json" "$out"
+  check_eq "f7s: the command is left untouched when the backup fails" \
+           'bash "~/.claude/headroom-statusline.sh"' \
+           "$(jq -r '.statusLine.command' "$F7S/settingsdir/settings.json")"
+else
+  echo "skip - f7s: settings.json backup-failure guard (running as root, permission bits bypassed)"
+fi
+
+# F7t: a present token from one candidate must not mask a co-occurring
+# missing signal from a DIFFERENT candidate token in the same statusLine
+# command (e.g. a shell fallback chain: try a custom path, else canonical).
+# The present-file short-circuit only ever needs to look at the FIRST
+# resolvable token to wrongly declare victory; the second, missing, canonical
+# token must still be surfaced.
+F7T="$REVD/f7t"; mkdir -p "$F7T/cd" "$F7T/custom"
+cp "$ROOT/scripts/statusline.sh" "$F7T/custom/headroom-statusline.sh"   # present, healthy, custom path
+jq -n --arg cust "$F7T/custom/headroom-statusline.sh" --arg canon "$F7T/cd/headroom-statusline.sh" \
+  '{statusLine:{type:"command",command:("bash \"" + $cust + "\" || bash \"" + $canon + "\"")}}' > "$F7T/settings.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7T/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7T/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check_absent "f7t: a present custom token doesn't mask a co-occurring missing canonical token" \
+             "statusLine wired (" "$out"
+check "f7t: the missing canonical token is still surfaced as fixable" \
+      "but the script is missing — --fix re-copies it" "$out"
+
+# F7u: settings.local.json's OWN legacy-hook removal must refuse to proceed
+# when its OWN backup fails, mirroring the primary settings.json / .mcp.json
+# guards (F7s/F8c) -- previously this call site swallowed the cp failure. The
+# main settings.json is deliberately clean here so only the local-file path
+# is exercised (that one was already fixed in an earlier round).
+if [ "$(id -u)" -ne 0 ]; then
+  F7U="$REVD/f7u"; mkdir -p "$F7U/cd" "$F7U/settingsdir"
+  printf '{}\n' > "$F7U/settingsdir/settings.json"                          # main settings.json: clean
+  doc_settings_legacy "$F7U/cd" > "$F7U/settingsdir/settings.local.json"    # settings.local.json: has the legacy hooks
+  chmod 666 "$F7U/settingsdir/settings.local.json"
+  chmod 555 "$F7U/settingsdir"
+  out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7U/settingsdir/settings.json" \
+        DOCTOR_CLAUDE_DIR="$F7U/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix 2>&1)
+  chmod 755 "$F7U/settingsdir"
+  check "f7u: settings.local.json legacy-hook removal backup failure refuses the rewrite" \
+        "could not back up settings.local.json before rewriting it" "$out"
+  check "f7u: settings.local.json's legacy hook entries survive when the backup fails" \
+        "dangi-hook.sh" "$(cat "$F7U/settingsdir/settings.local.json")"
+else
+  echo "skip - f7u: settings.local.json backup-failure guard (running as root, permission bits bypassed)"
+fi
+
+# F7v: wiring statusLine for the first time (no prior statusLine key at all)
+# must also refuse to proceed -- including the lib-dep/price-table copies --
+# when its own settings.json backup fails, not just the two respelled-wiring
+# and legacy-hook paths already covered.
+if [ "$(id -u)" -ne 0 ]; then
+  F7V="$REVD/f7v"; mkdir -p "$F7V/cd" "$F7V/settingsdir"
+  printf '{}\n' > "$F7V/settingsdir/settings.json"
+  chmod 666 "$F7V/settingsdir/settings.json"
+  chmod 555 "$F7V/settingsdir"
+  out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7V/settingsdir/settings.json" \
+        DOCTOR_CLAUDE_DIR="$F7V/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix 2>&1)
+  chmod 755 "$F7V/settingsdir"
+  check "f7v: fresh statusLine-wire backup failure refuses the rewrite" \
+        "could not back up settings.json before wiring the statusLine" "$out"
+  if [ ! -f "$F7V/cd/headroom-statusline.sh" ]; then
+    echo "ok - f7v: no orphan statusline.sh copy is dropped when the backup fails"; PASS=$((PASS+1))
+  else
+    echo "FAIL - f7v: no orphan statusline.sh copy is dropped when the backup fails"; FAIL=$((FAIL+1))
+  fi
+else
+  echo "skip - f7v: fresh-wire backup-failure guard (running as root, permission bits bypassed)"
+fi
+
+# F7w: a custom-path install whose SCRIPT itself (not just its lib deps) is
+# stale must be a FAIL (7b), not silently trusted -- and --fix must leave it
+# untouched (no-orphan policy: a custom path is the user's own to update).
+F7W="$REVD/f7w"; mkdir -p "$F7W/cd" "$F7W/custom"
+printf '#!/usr/bin/env bash\necho stale\n' > "$F7W/custom/headroom-statusline.sh"
+chmod +x "$F7W/custom/headroom-statusline.sh"
+jq -n --arg c "$F7W/custom/headroom-statusline.sh" \
+  '{statusLine:{type:"command",command:("bash \"" + $c + "\"")}}' > "$F7W/settings.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7W/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7W/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7w: a stale custom-path script is a FAIL (7b), not silently trusted" \
+             "statusline copy at $F7W/custom/headroom-statusline.sh is stale" "$out"
+check_absent "f7w: a stale custom script isn't cried-wolf as current" \
+             "statusline copy is current" "$out"
+HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7W/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7W/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+if printf '#!/usr/bin/env bash\necho stale\n' | cmp -s - "$F7W/custom/headroom-statusline.sh"; then
+  echo "ok - f7w: --fix leaves the stale custom script untouched (no-orphan policy)"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7w: --fix leaves the stale custom script untouched (no-orphan policy)"; FAIL=$((FAIL+1))
+fi
+
+# F7x: the settings.json command rewrite for a respelled canonical wiring must
+# not also mangle an unrelated SIBLING token that merely shares its prefix
+# (e.g. a coexisting ...headroom-statusline.sh.bak reference elsewhere in the
+# same command) -- an unbounded global substring replace would corrupt it too.
+F7X="$REVD/f7x"; mkdir -p "$F7X/home/.claude"
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash \"~/.claude/headroom-statusline.sh\" ; bash \"~/.claude/headroom-statusline.sh.bak\"","refreshInterval":1}}' > "$F7X/settings.json"
+HOME="$F7X/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7X/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7X/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+F7X_CMD=$(jq -r '.statusLine.command' "$F7X/settings.json")
+check "f7x: the respelled token is rewritten to an absolute path" \
+      "bash \"$F7X/home/.claude/headroom-statusline.sh\"" "$F7X_CMD"
+check "f7x: an unrelated sibling token sharing the same prefix is left untouched" \
+      'bash "~/.claude/headroom-statusline.sh.bak"' "$F7X_CMD"
+
+# F7y: a SINGLE-quoted respelled wiring (bash '~/...') is just as unexpandable
+# at spawn time as a double-quoted one (bash never expands a ~ inside EITHER
+# quote style), but the extraction loop treats both quote characters as
+# equally valid token delimiters -- so detection and the eventual rewrite
+# must track which one actually wraps the token, not assume double quotes.
+# Without this, the rewrite pattern silently fails to match, sl_new_cmd stays
+# byte-identical to sl, and doctor would falsely report "fixed" while writing
+# nothing -- violating the file's own "a second --fix run changes nothing"
+# idempotency claim (it would in fact never converge).
+F7Y="$REVD/f7y"; mkdir -p "$F7Y/home/.claude"
+cp "$ROOT/scripts/statusline.sh" "$F7Y/home/.claude/headroom-statusline.sh"   # already present
+printf "%s\n" '{"statusLine":{"type":"command","command":"bash '"'"'~/.claude/headroom-statusline.sh'"'"'","refreshInterval":1}}' > "$F7Y/settings.json"
+out=$(HOME="$F7Y/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7Y/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7Y/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check_absent "f7y: a single-quoted unexpandable wiring is not trusted ok just because the file exists" \
+             "statusLine wired (" "$out"
+HOME="$F7Y/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7Y/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7Y/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+F7Y_CMD=$(jq -r '.statusLine.command' "$F7Y/settings.json")
+check_absent "f7y: --fix actually changes the single-quoted command (not a silent no-op)" \
+             '~' "$F7Y_CMD"
+check "f7y: the single-quote style is preserved in the rewritten command" \
+      "bash '$F7Y/home/.claude/headroom-statusline.sh'" "$F7Y_CMD"
+if HOME="$F7Y/home" sh -c "$F7Y_CMD" < /dev/null >/dev/null 2>"$F7Y/run.err"; then
+  echo "ok - f7y: the rewired single-quoted command actually runs"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7y: the rewired single-quoted command actually runs"; FAIL=$((FAIL+1))
+  cat "$F7Y/run.err" >&2
+fi
+
+# F7z: an UNQUOTED bare tilde (bash ~/...) DOES tilde-expand correctly at
+# spawn time (quoting, not the tilde itself, is what blocks expansion) -- it
+# must not be misclassified as an unexpandable respelling and rewritten (or
+# flagged fixable) when it already works.
+F7Z="$REVD/f7z"; mkdir -p "$F7Z/home/.claude"
+cp "$ROOT/scripts/statusline.sh" "$F7Z/home/.claude/headroom-statusline.sh"
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash ~/.claude/headroom-statusline.sh","refreshInterval":1}}' > "$F7Z/settings.json"
+out=$(HOME="$F7Z/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7Z/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7Z/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check "f7z: a genuinely-working unquoted tilde wiring is trusted ok, not misdiagnosed" \
+      "statusLine wired (" "$out"
+check_absent "f7z: an unquoted tilde wiring is not flagged as unexpandable" \
+             "can never resolve" "$out"
+F7Z2="$REVD/f7z2"; mkdir -p "$F7Z2/home/.claude"
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash ~/.claude/headroom-statusline.sh","refreshInterval":1}}' > "$F7Z2/settings.json"
+HOME="$F7Z2/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7Z2/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7Z2/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+check_eq "f7z: a missing unquoted-tilde wiring's file is copied without rewriting the (already-fine) command" \
+         "bash ~/.claude/headroom-statusline.sh" \
+         "$(jq -r '.statusLine.command' "$F7Z2/settings.json")"
+if cmp -s "$ROOT/scripts/statusline.sh" "$F7Z2/home/.claude/headroom-statusline.sh"; then
+  echo "ok - f7z: --fix still re-copies the missing script for an unquoted wiring"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7z: --fix still re-copies the missing script for an unquoted wiring"; FAIL=$((FAIL+1))
+fi
+
+# F7aa: the PRIMARY settings.json's own legacy-hook removal must refuse to
+# proceed when its own backup fails -- the code path was fixed several
+# rounds ago (via backup_settings()) but never had a dedicated fixture; every
+# sibling call site (F7s, F7u, .mcp.json's F8c) has one, this one didn't.
+if [ "$(id -u)" -ne 0 ]; then
+  F7AA="$REVD/f7aa"; mkdir -p "$F7AA/cd" "$F7AA/settingsdir"
+  doc_settings_legacy "$F7AA/cd" > "$F7AA/settingsdir/settings.json"
+  chmod 666 "$F7AA/settingsdir/settings.json"
+  chmod 555 "$F7AA/settingsdir"
+  out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7AA/settingsdir/settings.json" \
+        DOCTOR_CLAUDE_DIR="$F7AA/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix 2>&1)
+  chmod 755 "$F7AA/settingsdir"
+  check "f7aa: primary settings.json legacy-hook removal backup failure refuses the rewrite" \
+        "could not back up settings.json before rewriting it" "$out"
+  check "f7aa: legacy hook entries survive when the backup fails" \
+        "dangi-hook.sh" "$(cat "$F7AA/settingsdir/settings.json")"
+else
+  echo "skip - f7aa: primary settings.json backup-failure guard (running as root, permission bits bypassed)"
+fi
+
+# F7bb: the project-level settings scan's own backup (a THIRD, independent
+# call site from F7u's settings.local.json) must also refuse to proceed when
+# its backup fails.
+if [ "$(id -u)" -ne 0 ]; then
+  F7BB="$REVD/f7bb"; mkdir -p "$F7BB/cd" "$F7BB/settingsdir" "$F7BB/proj/.claude"
+  printf '{}\n' > "$F7BB/settingsdir/settings.json"
+  doc_settings_legacy "$F7BB/cd" > "$F7BB/proj/.claude/settings.json"
+  chmod 666 "$F7BB/proj/.claude/settings.json"
+  chmod 555 "$F7BB/proj/.claude"
+  out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7BB/settingsdir/settings.json" \
+        DOCTOR_CLAUDE_DIR="$F7BB/cd" DOCTOR_PROJECT_DIR="$F7BB/proj" DOCTOR_VENV_DIR="$NOVENV" \
+        bash "$DOCTOR" --fix 2>&1)
+  chmod 755 "$F7BB/proj/.claude"
+  check "f7bb: project-level settings legacy-hook removal backup failure refuses the rewrite" \
+        "could not back up $F7BB/proj/.claude/settings.json before rewriting it" "$out"
+  check "f7bb: project-level legacy hook entries survive when the backup fails" \
+        "dangi-hook.sh" "$(cat "$F7BB/proj/.claude/settings.json")"
+else
+  echo "skip - f7bb: project-level settings backup-failure guard (running as root, permission bits bypassed)"
+fi
+
+# F8: execution semantics — Claude Code expands ${CLAUDE_PLUGIN_ROOT} in an MCP
+# stdio command and then spawns the result DIRECTLY (posix_spawn, no shell), so
+# literal quotes become part of the filename → ENOENT, the /plugin ✗, and the
+# bundled server never connects (shipped that way v2.5→v2.7.2, masked wherever a
+# manual ~/.claude.json registration still provided the tools). Hook commands are
+# the opposite — they DO run through a shell — so hooks.json keeps its quoting.
+# Pin the asymmetry in both directions.
+f8_mcp_cmd=$(jq -r '.mcpServers.headroom.command' "$MCP_JSON")
+check_absent "f8: mcp command carries no literal quotes (spawned without a shell)" '"' "$f8_mcp_cmd"
+f8_spawn=${f8_mcp_cmd//'${CLAUDE_PLUGIN_ROOT}'/$ROOT}
+if [ -x "$f8_spawn" ]; then
+  echo "ok - f8: mcp command as-spawned is the executable launcher"; PASS=$((PASS+1))
+else
+  echo "FAIL - f8: mcp command as-spawned is the executable launcher"
+  echo "    not executable: $f8_spawn"
+  FAIL=$((FAIL+1))
+fi
+check "f8: hooks.json gate command KEEPS its shell quoting (hooks run via shell)" \
+      '"${CLAUDE_PLUGIN_ROOT}"/scripts/hcat-gate.sh' \
+      "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$ROOT/hooks/hooks.json")"
+
+# F8b: doctor 4b must judge the launcher AS-SPAWNED. The shipped bug above stayed
+# green for two minor versions because 4b stripped quotes before its -x test —
+# mechanism, not outcome. A quoted-but-otherwise-correct command is now fixable:
+# --fix unquotes the bundled .mcp.json in place (.bak first, idempotent).
+F8B="$REVD/f8b"; mkdir -p "$F8B/root/scripts" "$F8B/cd"
+cp "$DOCTOR" "$F8B/root/scripts/doctor.sh"
+printf '#!/bin/sh\nexec true\n' > "$F8B/root/scripts/mcp-launcher.sh"
+chmod +x "$F8B/root/scripts/mcp-launcher.sh"
+jq -n '{mcpServers:{headroom:{type:"stdio",command:"\"${CLAUDE_PLUGIN_ROOT}\"/scripts/mcp-launcher.sh",args:[],env:{}}}}' \
+  > "$F8B/root/.mcp.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F8B/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F8B/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$F8B/root/scripts/doctor.sh" 2>&1)
+check        "f8b: quoted mcp command reported fixable" "carries literal quotes"              "$out"
+check_absent "f8b: quoted mcp command not greened"      ".mcp.json registers the headroom MCP" "$out"
+HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F8B/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F8B/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$F8B/root/scripts/doctor.sh" --fix >/dev/null 2>&1
+check_eq "f8b: --fix unquoted the command in place" '${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launcher.sh' \
+         "$(jq -r '.mcpServers.headroom.command' "$F8B/root/.mcp.json")"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F8B/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F8B/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$F8B/root/scripts/doctor.sh" 2>&1)
+check "f8b: post-fix rerun greens 4b" ".mcp.json registers the headroom MCP" "$out"
+HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F8B/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F8B/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$F8B/root/scripts/doctor.sh" --fix >/dev/null 2>&1
+check_eq "f8b: second --fix is a no-op (exactly one backup)" "1" \
+         "$(ls "$F8B/root/.mcp.json.bak."* 2>/dev/null | wc -l | tr -d ' ')"
+
+# F8c: the backup must actually succeed before the destructive rewrite
+# proceeds. A directory that denies creating new entries (no backup possible)
+# but still permits writing to an existing file's inode (the rewrite itself)
+# is exactly the failure mode this guards: previously the backup's exit
+# status was discarded and the rewrite ran anyway, claiming a backup that was
+# never created. Root can bypass these permission bits, so this fixture is
+# skipped when running as root (id -u 0).
+if [ "$(id -u)" -ne 0 ]; then
+  F8C="$REVD/f8c"; mkdir -p "$F8C/root/scripts" "$F8C/cd"
+  cp "$DOCTOR" "$F8C/root/scripts/doctor.sh"
+  printf '#!/bin/sh\nexec true\n' > "$F8C/root/scripts/mcp-launcher.sh"
+  chmod +x "$F8C/root/scripts/mcp-launcher.sh"
+  jq -n '{mcpServers:{headroom:{type:"stdio",command:"\"${CLAUDE_PLUGIN_ROOT}\"/scripts/mcp-launcher.sh",args:[],env:{}}}}' \
+    > "$F8C/root/.mcp.json"
+  chmod 666 "$F8C/root/.mcp.json"   # the file itself stays writable in place
+  chmod 555 "$F8C/root"             # but the directory cannot gain new entries
+  out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F8C/settings.json" \
+        DOCTOR_CLAUDE_DIR="$F8C/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$F8C/root/scripts/doctor.sh" --fix 2>&1)
+  chmod 755 "$F8C/root"             # restore before any cleanup/further use
+  check "f8c: a backup failure refuses the destructive rewrite" "could not back up" "$out"
+  check_eq "f8c: the command is left untouched when the backup fails" \
+           '"${CLAUDE_PLUGIN_ROOT}"/scripts/mcp-launcher.sh' \
+           "$(jq -r '.mcpServers.headroom.command' "$F8C/root/.mcp.json")"
+else
+  echo "skip - f8c: backup-failure guard (running as root, permission bits bypassed)"
+fi
 
 # --- 36. data-driven price table (data/model-prices.json)
 PRICES_JSON="$ROOT/data/model-prices.json"

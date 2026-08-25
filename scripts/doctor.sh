@@ -4,7 +4,7 @@
 #
 # Read-only by default: prints aligned ok/FAIL/fixable/skip lines and exits 0
 # iff nothing FAILed. `--fix` applies the repairs reported as fixable:
-#   * engine bootstrap — python3 -m venv ~/.headroom-venv + pip install headroom
+#   * engine bootstrap — python3 -m venv ~/.headroom-venv + pip install "headroom-ai[all]"
 #   * legacy hooks     — remove pre-plugin dangi/gate hook entries from
 #                        settings.json (timestamped .bak written first)
 #   * statusLine       — copy scripts/statusline.sh to ~/.claude/headroom-statusline.sh
@@ -12,6 +12,15 @@
 #                        merge-aware: an existing non-headroom command is kept
 #                        under _headroomStatusLineBackup and chained before the
 #                        badge (same semantics as the SKILL.md installer)
+#   * wired-missing copy — re-copy statusline.sh (+ lib deps, price table) to
+#                        ~/.claude when settings already point at the canonical
+#                        path but the script is absent; if the wiring named it
+#                        by a respelling bash can never expand (a quoted ~),
+#                        also rewrites statusLine.command to the absolute path
+#                        (.bak first)
+#   * quoted mcp cmd   — strip literal quotes from the .mcp.json command
+#                        (.bak first); MCP commands are spawned without a
+#                        shell, so quotes break the launcher path
 #   * stale copies     — delete pre-plugin script copies in ~/.claude, but only
 #                        once plugin-native hooks are confirmed and no legacy
 #                        hook entries remain
@@ -74,13 +83,20 @@ say() {  # say <ok|fixed|FAIL|fixable|skip> <message> — aligned status lines
 TMPD=$(mktemp -d) || exit 1
 trap 'rm -rf "$TMPD"' EXIT
 
-# one timestamped settings.json backup per doctor run, before the first edit
-BAK_DONE=0
+# one timestamped settings.json backup per doctor run, before the first edit.
+# Returns failure (and keeps returning it for the rest of this run, via
+# BAK_FAILED) when the cp itself fails -- callers must refuse to proceed with
+# a destructive rewrite when this returns nonzero, the same way the .mcp.json
+# fix already gates its own rewrite on a checked backup.
+BAK_DONE=0; BAK_FAILED=0
 backup_settings() {
-  [ "$BAK_DONE" -eq 1 ] && return 0
-  BAK_DONE=1
-  [ -f "$SETTINGS" ] && cp "$SETTINGS" "$SETTINGS.bak.$(date +%Y%m%d%H%M%S)"
-  return 0
+  if [ "$BAK_DONE" -eq 0 ]; then
+    BAK_DONE=1
+    if [ -f "$SETTINGS" ] && ! cp "$SETTINGS" "$SETTINGS.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null; then
+      BAK_FAILED=1
+    fi
+  fi
+  [ "$BAK_FAILED" -eq 0 ]
 }
 
 # --- 1. jq — everything else that reads JSON leans on it
@@ -114,7 +130,7 @@ shebang_interp() {  # shebang_interp <script> — interpreter path from its #! l
 PY=""
 HCAT_PY_BROKEN=0
 if [ -n "${HCAT_PYTHON:-}" ]; then
-  if [ -x "$HCAT_PYTHON" ] && "$HCAT_PYTHON" -c 'import headroom' >/dev/null 2>&1; then
+  if [ -x "$HCAT_PYTHON" ] && "$HCAT_PYTHON" -c 'import headroom.compress' >/dev/null 2>&1; then
     PY=$HCAT_PYTHON
   else
     HCAT_PY_BROKEN=1
@@ -124,13 +140,13 @@ else
   for cand in "${HR_CLI:+$(dirname "$HR_CLI")/python}" \
               "$([ -n "$HR_CLI" ] && shebang_interp "$HR_CLI")" \
               "$VENV_DIR/bin/python"; do
-    if [ -n "$cand" ] && [ -x "$cand" ] && "$cand" -c 'import headroom' >/dev/null 2>&1; then
+    if [ -n "$cand" ] && [ -x "$cand" ] && "$cand" -c 'import headroom.compress' >/dev/null 2>&1; then
       PY=$cand; break
     fi
   done
 fi
 if [ -n "$PY" ]; then
-  say ok "engine python: $PY (import headroom works)"
+  say ok "engine python: $PY (import headroom.compress works)"
 elif [ "$HCAT_PY_BROKEN" -eq 1 ] && [ "$FIX" -eq 1 ]; then
   # the override is authoritative, so a bootstrapped venv would never be used:
   # bootstrapping here burns time every run and the check still never turns ok
@@ -139,10 +155,10 @@ elif [ "$FIX" -eq 1 ]; then
   venv_preexisted=0; [ -e "$VENV_DIR" ] && venv_preexisted=1
   if python3 -m venv "$VENV_DIR" >/dev/null 2>&1 \
      && [ -x "$VENV_DIR/bin/pip" ] \
-     && "$VENV_DIR/bin/pip" install headroom >/dev/null 2>&1 \
+     && "$VENV_DIR/bin/pip" install "headroom-ai[all]" >/dev/null 2>&1 \
      && [ -x "$VENV_DIR/bin/python" ] \
-     && "$VENV_DIR/bin/python" -c 'import headroom' >/dev/null 2>&1; then
-    say fixed "engine bootstrapped: python3 -m venv $VENV_DIR + pip install headroom"
+     && "$VENV_DIR/bin/python" -c 'import headroom.compress' >/dev/null 2>&1; then
+    say fixed "engine bootstrapped: python3 -m venv $VENV_DIR + pip install \"headroom-ai[all]\""
   else
     # never leave a half-created venv behind: its bin/python would pass -x
     # checks elsewhere while pip and the headroom package are missing
@@ -150,12 +166,12 @@ elif [ "$FIX" -eq 1 ]; then
     hint=""
     command -v apt-get >/dev/null 2>&1 \
       && hint=" (on Debian/Ubuntu, python3 -m venv needs the python3-venv package: sudo apt install python3-venv)"
-    say FAIL "engine bootstrap failed — try by hand: python3 -m venv $VENV_DIR && $VENV_DIR/bin/pip install headroom$hint"
+    say FAIL "engine bootstrap failed — try by hand: python3 -m venv $VENV_DIR && $VENV_DIR/bin/pip install \"headroom-ai[all]\"$hint"
   fi
 elif [ "$HCAT_PY_BROKEN" -eq 1 ]; then
   say fixable "engine python not found — HCAT_PYTHON is set but broken ($HCAT_PYTHON); unset it or point it at a working python (--fix refuses to bootstrap while it is set)"
 else
-  say fixable "engine python not found — --fix creates $VENV_DIR and pip-installs headroom"
+  say fixable "engine python not found — --fix creates $VENV_DIR and pip-installs headroom-ai"
 fi
 
 # --- 3. bin/hcat + a real smoke compression of a generated ~26 KB JSON
@@ -207,10 +223,30 @@ elif ! jq -e '.mcpServers.headroom.command' "$MCP_DEF" >/dev/null 2>&1; then
   say FAIL ".mcp.json missing/invalid or lacks the headroom server ($MCP_DEF)"
 else
   mcp_cmd=$(jq -r '.mcpServers.headroom.command' "$MCP_DEF")
+  # Claude Code expands ${CLAUDE_PLUGIN_ROOT} and spawns the result directly
+  # (posix_spawn, no shell) — judge the string exactly as spawned; quotes are
+  # never unwrapped, they become part of the filename.
   mcp_path=${mcp_cmd//'${CLAUDE_PLUGIN_ROOT}'/$PLUGIN_ROOT}
-  mcp_path=${mcp_path//\"/}
   if [ -x "$mcp_path" ]; then
     say ok ".mcp.json registers the headroom MCP (launcher: $mcp_path)"
+  elif [ -x "${mcp_path//\"/}" ]; then
+    # the launcher exists but the command wraps it in literal quotes (shipped
+    # v2.5→v2.7.2): ENOENT at spawn → the /plugin ✗, server never connects
+    if [ "$FIX" -eq 1 ]; then
+      # the backup must actually land before we overwrite the only copy on
+      # disk — a swallowed backup failure followed by a rewrite would claim
+      # "(backup: ...)" while leaving no recovery copy at all
+      if ! cp "$MCP_DEF" "$MCP_DEF.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null; then
+        say FAIL "could not back up $MCP_DEF before rewriting it — refusing to overwrite without one"
+      elif jq --arg c "${mcp_cmd//\"/}" '.mcpServers.headroom.command = $c' \
+          "$MCP_DEF" > "$TMPD/mcp.new" && cat "$TMPD/mcp.new" > "$MCP_DEF"; then
+        say fixed "unquoted the .mcp.json command — MCP commands are spawned without a shell (backup: .mcp.json.bak.*)"
+      else
+        say FAIL "could not rewrite $MCP_DEF to drop the literal quotes"
+      fi
+    else
+      say fixable ".mcp.json command carries literal quotes — spawned without a shell they break the launcher path, so the bundled MCP never connects (--fix unquotes it)"
+    fi
   else
     say FAIL ".mcp.json launcher missing or not executable ($mcp_path)"
   fi
@@ -270,8 +306,9 @@ else
     if [ "$legacy" -eq 0 ]; then
       say ok "no legacy hook registrations in settings.json"
     elif [ "$FIX" -eq 1 ]; then
-      backup_settings
-      if jq "$LEGACY_STRIP_JQ" \
+      if ! backup_settings; then
+        say FAIL "could not back up settings.json before rewriting it — refusing to overwrite without one"
+      elif jq "$LEGACY_STRIP_JQ" \
           "$SETTINGS" > "$TMPD/settings.new" && cat "$TMPD/settings.new" > "$SETTINGS"; then
         say fixed "removed $legacy legacy hook entries from settings.json (backup: settings.json.bak.*)"
         legacy=0
@@ -290,8 +327,9 @@ else
       ''|*[!0-9]*) legacy_local=-1 ;;   # unparseable → scan inconclusive
     esac
     if [ "$legacy_local" -gt 0 ] && [ "$FIX" -eq 1 ]; then
-      cp "$LOCAL_SETTINGS" "$LOCAL_SETTINGS.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
-      if jq "$LEGACY_STRIP_JQ" "$LOCAL_SETTINGS" > "$TMPD/settings.local.new" \
+      if ! cp "$LOCAL_SETTINGS" "$LOCAL_SETTINGS.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null; then
+        say FAIL "could not back up settings.local.json before rewriting it — refusing to overwrite without one"
+      elif jq "$LEGACY_STRIP_JQ" "$LOCAL_SETTINGS" > "$TMPD/settings.local.new" \
          && cat "$TMPD/settings.local.new" > "$LOCAL_SETTINGS"; then
         say fixed "removed $legacy_local legacy hook entries from settings.local.json (backup: settings.local.json.bak.*)"
         legacy_local=0
@@ -324,8 +362,10 @@ else
     if [ "$pl" -eq 0 ]; then
       say ok "no legacy hook registrations in $pj"
     elif [ "$FIX" -eq 1 ]; then
-      cp "$pj" "$pj.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
-      if jq "$LEGACY_STRIP_JQ" "$pj" > "$TMPD/proj.new" && cat "$TMPD/proj.new" > "$pj"; then
+      if ! cp "$pj" "$pj.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null; then
+        proj_legacy=1
+        say FAIL "could not back up $pj before rewriting it — refusing to overwrite without one"
+      elif jq "$LEGACY_STRIP_JQ" "$pj" > "$TMPD/proj.new" && cat "$TMPD/proj.new" > "$pj"; then
         say fixed "removed $pl legacy hook entries from $pj (backup: $pj.bak.*)"
       else
         proj_legacy=1
@@ -345,11 +385,133 @@ else
   if [ "$SETTINGS_OK" -eq 0 ]; then
     say skip "statusLine (settings.json unparseable — repair it first)"
   elif printf '%s' "$sl" | grep -q "headroom-statusline"; then
-    say ok "statusLine wired ($sl)"
+    # A bare string match is not proof the script is on disk. Extract every path
+    # token that names the statusline script — absolute, quoted-tilde, or a
+    # foreign home synced from dotfiles — expand a leading ~, and require at
+    # least one to exist; otherwise the badge renders nothing while 7b/7c only
+    # `skip` (guarded on the same absent file) and block 9 clears any recorded
+    # failure — a silent pass for every respelling of the canonical path. Only
+    # the canonical $CLAUDE_DIR copy is ours to re-copy under --fix; a script
+    # missing at a hand-edited custom path is a FAIL, not a fixable — the
+    # doctor won't guess where to place a copy (no-orphan policy), and a
+    # fixable that --fix cannot repair would break the fixable contract. A
+    # command with no extractable path token is trusted as wired.
+    # Candidate tokens are whole quote/space-delimited words, not a substring
+    # regex match: a substring match has no token boundary, so it silently
+    # truncates a suffixed filename (headroom-statusline.sh.bak -> verifies
+    # the wrong, unsuffixed file) and can start mid-token on a false match
+    # (matching the '/' inside "$HOME/..." instead of the token's real start).
+    # Each token is then structurally validated (starts with ~/ or /, ends
+    # exactly at "headroom-statusline.sh") before being trusted as a real
+    # candidate; anything else falls through to the no-extractable-token
+    # trust rule below, same as before.
+    sl_present=0; sl_seen=0; sl_canonical_missing=0; sl_respelled_raw=""
+    sl_respelled_delim=""; sl_custom_missing=""; sl_wired_path=""
+    while IFS= read -r sl_tok; do
+      [ -n "$sl_tok" ] || continue
+      # shellcheck disable=SC2088 # matching a LITERAL ~ the shell never expanded — this just structurally validates the token shape
+      case $sl_tok in
+        "~/"*headroom-statusline.sh | /*headroom-statusline.sh) ;;
+        *) continue ;;
+      esac
+      sl_cand=$sl_tok
+      sl_seen=1
+      sl_raw=$sl_cand
+      # shellcheck disable=SC2088 # matching a LITERAL ~ the shell never expanded — we expand it here
+      case $sl_cand in "~/"*) sl_cand="$HOME/${sl_cand#"~/"}" ;; esac
+      if [ "$sl_cand" = "$CLAUDE_DIR/headroom-statusline.sh" ] && [ "$sl_raw" != "$CLAUDE_DIR/headroom-statusline.sh" ]; then
+        # names the canonical file only via a ~ respelling. Whether that
+        # actually resolves at spawn time depends on how the shell sees it:
+        # bash expands an UNQUOTED ~, but never one inside single OR double
+        # quotes. The [^"' ]+ extraction above already treats both quote
+        # characters as equally valid delimiters, so detection must too —
+        # check which one (if either) actually wraps this exact token in the
+        # raw command, and remember it so the eventual rewrite anchors on the
+        # SAME delimiter it detected, not an assumed one.
+        sl_sq="'"
+        # shellcheck disable=SC2027 # $sl_raw is deliberately unquoted here -- it's a case-pattern glob segment, not a quoting typo
+        case $sl in
+          *\"$sl_raw\"*) sl_respelled_raw=$sl_raw; sl_respelled_delim='"' ;;
+          *"$sl_sq"$sl_raw"$sl_sq"*) sl_respelled_raw=$sl_raw; sl_respelled_delim=$sl_sq ;;
+          *) : ;;  # unquoted -- bash expands this fine at spawn time, nothing to rewrite
+        esac
+      fi
+      if [ -f "$sl_cand" ]; then sl_present=1; sl_wired_path=$sl_cand
+      elif [ "$sl_cand" = "$CLAUDE_DIR/headroom-statusline.sh" ]; then sl_canonical_missing=1
+      else sl_custom_missing=$sl_cand
+      fi
+    done < <(printf '%s\n' "$sl" | grep -oE "[^\"' ]+")
+    # A present token from one candidate must not mask a co-occurring missing
+    # signal from a DIFFERENT candidate token in the same command -- require
+    # no missing signal was raised by ANY token, not just that ONE resolved.
+    if [ "$sl_present" -eq 1 ] && [ -z "$sl_respelled_raw" ] \
+       && [ "$sl_canonical_missing" -eq 0 ] && [ -z "$sl_custom_missing" ]; then
+      say ok "statusLine wired ($sl)"
+    elif [ "$sl_seen" -eq 0 ]; then
+      say ok "statusLine wired ($sl)"
+    elif [ -n "$sl_respelled_raw" ] || [ "$sl_canonical_missing" -eq 1 ]; then
+      # the canonical file's identity was only proven via doctor's OWN tilde
+      # expansion above; the wired command itself never expands it (bash
+      # never expands a ~ inside double quotes), so this is broken even when
+      # the script already exists on disk — must not report ok either way
+      if [ "$FIX" -eq 1 ]; then
+        sl_copy_ok=1
+        if [ "$sl_canonical_missing" -eq 1 ]; then
+          mkdir -p "$CLAUDE_DIR/lib"
+          # model-prices.json degrades gracefully when absent (statusline.sh
+          # falls back to a built-in table), so it stays best-effort; the two
+          # deps below are load-bearing for a working badge and must gate
+          # sl_copy_ok, same as the sibling fix in 7c just below
+          [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
+            && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
+          cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" \
+            && cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" \
+            && cp "$PLUGIN_ROOT/scripts/statusline.sh" "$CLAUDE_DIR/headroom-statusline.sh" \
+            && chmod +x "$CLAUDE_DIR/headroom-statusline.sh" || sl_copy_ok=0
+        fi
+        if [ "$sl_copy_ok" -eq 0 ]; then
+          say FAIL "could not re-copy statusline.sh and its lib deps to $CLAUDE_DIR"
+        elif [ -z "$sl_respelled_raw" ]; then
+          # literal canonical wiring, file was just missing -- the re-copy
+          # above already fixes it; no settings.json mutation needed
+          say fixed "re-copied the missing statusline script to $CLAUDE_DIR/headroom-statusline.sh (settings already pointed at it)"
+        elif ! backup_settings; then
+          say FAIL "could not back up settings.json before rewriting the '$sl_respelled_raw' wiring — refusing to overwrite without one"
+        else
+          # Anchor the replace on the SAME closing quote character detection
+          # found wrapping this token (' or ") -- a global substring replace
+          # with the wrong (or no) anchor can't also mangle an unrelated
+          # sibling token that merely shares this one's prefix (e.g. a
+          # coexisting ...headroom-statusline.sh.bak).
+          sl_new_cmd=${sl//$sl_respelled_raw$sl_respelled_delim/$CLAUDE_DIR/headroom-statusline.sh$sl_respelled_delim}
+          if [ "$sl_new_cmd" = "$sl" ]; then
+            # the replace found nothing to change -- never claim "fixed" for a
+            # rewrite that silently did nothing, which would violate the
+            # idempotent contract and mask the wiring staying broken
+            say FAIL "could not identify how '$sl_respelled_raw' is quoted in the statusLine command — refusing to rewrite it blindly"
+          elif jq --arg c "$sl_new_cmd" '.statusLine.command = $c' \
+              "$SETTINGS" > "$TMPD/settings.sl2" && cat "$TMPD/settings.sl2" > "$SETTINGS"; then
+            if [ "$sl_canonical_missing" -eq 1 ]; then
+              say fixed "re-copied the missing statusline script to $CLAUDE_DIR/headroom-statusline.sh and rewrote the unexpandable '$sl_respelled_raw' wiring to an absolute path (settings.json backup: .bak.*)"
+            else
+              say fixed "rewrote the unexpandable '$sl_respelled_raw' statusLine wiring to an absolute path — the script was already present at $CLAUDE_DIR/headroom-statusline.sh (settings.json backup: .bak.*)"
+            fi
+          else
+            say FAIL "could not rewrite the '$sl_respelled_raw' wiring in settings.json"
+          fi
+        fi
+      elif [ "$sl_canonical_missing" -eq 1 ]; then
+        say fixable "statusLine points at $CLAUDE_DIR/headroom-statusline.sh but the script is missing — --fix re-copies it"
+      else
+        say fixable "statusLine wiring '$sl_respelled_raw' can never resolve (bash never expands a ~ inside quotes) even though $CLAUDE_DIR/headroom-statusline.sh already exists — --fix rewrites it to an absolute path"
+      fi
+    else
+      say FAIL "statusLine points at $sl_custom_missing but no such file exists — restore it or re-wire settings.json (--fix will not guess a custom location)"
+    fi
   elif [ "$FIX" -eq 1 ]; then
     mkdir -p "$CLAUDE_DIR"
     [ -f "$SETTINGS" ] || printf '{}\n' > "$SETTINGS"
-    backup_settings
+    sl_bak_ok=1; backup_settings || sl_bak_ok=0
     sl_path="$CLAUDE_DIR/headroom-statusline.sh"
     case $sl_path in
       "$HOME"/*) sl_disp="~${sl_path#"$HOME"}" ;;
@@ -376,24 +538,33 @@ else
   end
 JQEOF
 )
-    [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
-      && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
-    # statusline.sh resolves attribution.jq + headroom-state.sh from a lib/ dir
-    # next to itself; without them compute() degrades to a permanent idle badge
-    # showing zero savings (issue #2). Provision them alongside the copy.
-    mkdir -p "$CLAUDE_DIR/lib"
-    cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
-    cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" 2>/dev/null || true
-    if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_path" && chmod +x "$sl_path" \
-       && jq --arg hr "bash \"$sl_path\"" "$sl_merge_jq" \
-          "$SETTINGS" > "$TMPD/settings.sl" && cat "$TMPD/settings.sl" > "$SETTINGS"; then
-      if [ -n "$sl" ] && ! printf '%s' "$sl" | grep -q "mcp__headroom__headroom_compress"; then
-        say fixed "statusLine merged — your command kept and backed up under _headroomStatusLineBackup, badge appended ($sl_disp)"
-      else
-        say fixed "statusLine wired to $sl_disp (script copied, backup: settings.json.bak.*)"
-      fi
+    if [ "$sl_bak_ok" -eq 0 ]; then
+      say FAIL "could not back up settings.json before wiring the statusLine — refusing to overwrite without one"
     else
-      say FAIL "could not copy statusline.sh to $sl_path and wire settings.json"
+      # a failed backup must refuse every disk write this fix makes, not just
+      # the final script copy and settings rewrite -- so these stay gated
+      # behind the check above rather than running unconditionally first
+      [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
+        && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
+      # statusline.sh resolves attribution.jq + headroom-state.sh from a lib/ dir
+      # next to itself; without them compute() degrades to a permanent idle badge
+      # showing zero savings (issue #2). Provision them alongside the copy, and
+      # gate the "fixed" claim on them actually landing -- a silently-failed
+      # lib-dep copy must not be reported as a successful wire.
+      mkdir -p "$CLAUDE_DIR/lib"
+      if cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" \
+         && cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" \
+         && cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_path" && chmod +x "$sl_path" \
+         && jq --arg hr "bash \"$sl_path\"" "$sl_merge_jq" \
+            "$SETTINGS" > "$TMPD/settings.sl" && cat "$TMPD/settings.sl" > "$SETTINGS"; then
+        if [ -n "$sl" ] && ! printf '%s' "$sl" | grep -q "mcp__headroom__headroom_compress"; then
+          say fixed "statusLine merged — your command kept and backed up under _headroomStatusLineBackup, badge appended ($sl_disp)"
+        else
+          say fixed "statusLine wired to $sl_disp (script copied, backup: settings.json.bak.*)"
+        fi
+      else
+        say FAIL "could not copy statusline.sh (+ lib deps) to $sl_path and wire settings.json"
+      fi
     fi
   elif [ -n "$sl" ]; then
     say fixable "statusLine present without the headroom badge — --fix appends it, preserving your command under _headroomStatusLineBackup"
@@ -401,42 +572,73 @@ JQEOF
     say fixable "statusLine not wired — --fix copies the script to $CLAUDE_DIR and points settings.json at it"
   fi
 
-  # 7b. the wired copy must match the plugin's statusline.sh (upgrade path)
-  sl_copy="$CLAUDE_DIR/headroom-statusline.sh"
+  # 7b. the wired copy must match the plugin's statusline.sh (upgrade path).
+  # sl_copy follows whatever check 7 actually validated as wired — including
+  # a doctor-blessed custom path — instead of always assuming the canonical
+  # location. Previously 7b/7c only ever looked at $CLAUDE_DIR, so a custom
+  # install's stale/missing script or deps went undetected forever (`skip`,
+  # not FAILED/FIXABLE) and block 9's all-clear cleared any recorded failure
+  # regardless — issue #2's original symptom, for the custom-path population.
+  sl_copy=${sl_wired_path:-"$CLAUDE_DIR/headroom-statusline.sh"}
+  sl_custom_copy=0
+  [ "$sl_copy" != "$CLAUDE_DIR/headroom-statusline.sh" ] && sl_custom_copy=1
   if [ ! -f "$sl_copy" ]; then
     say skip "statusline copy refresh (no $sl_copy yet)"
   elif cmp -s "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_copy"; then
     say ok "statusline copy is current ($sl_copy)"
+  elif [ "$sl_custom_copy" -eq 1 ]; then
+    # no-orphan policy (matches check 7): a custom path is the user's own to
+    # own, so doctor detects but never overwrites it
+    say FAIL "statusline copy at $sl_copy is stale — a custom-path install is yours to update (doctor will not overwrite it)"
   elif [ "$FIX" -eq 1 ]; then
     [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
       && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
     mkdir -p "$CLAUDE_DIR/lib"
-    cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
-    cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" 2>/dev/null || true
-    if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_copy" && chmod +x "$sl_copy"; then
+    if cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" \
+       && cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" \
+       && cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_copy" && chmod +x "$sl_copy"; then
       say fixed "statusline copy refreshed from the plugin ($sl_copy)"
     else
-      say FAIL "could not refresh $sl_copy from the plugin"
+      say FAIL "could not refresh $sl_copy (+ lib deps) from the plugin"
     fi
   else
     say fixable "statusline copy differs from the plugin's scripts/statusline.sh — --fix refreshes it"
   fi
 
   # 7c. statusline.sh's runtime deps (attribution.jq + headroom-state.sh) must sit
-  # in a lib/ dir next to the installed copy, or compute() silently degrades to a
-  # permanent idle badge showing zero savings (issue #2). The plain cmp in 7b only
-  # covers the script itself — these are separate files and were never provisioned.
+  # next to the installed copy, or compute() silently degrades to a permanent idle
+  # badge showing zero savings (issue #2). The plain cmp in 7b only covers the
+  # script itself — these are separate files and were never provisioned.
+  # statusline.sh resolves each dep from EITHER a lib/ subdir OR a flat sibling
+  # (the legacy full-manual install layout), preferring lib/. Mirror that here so
+  # a healthy flat install is not falsely flagged (which would also block block 9's
+  # ambient-health all-clear via a spurious FIXABLE).
   if [ ! -f "$sl_copy" ]; then
     say skip "statusline lib deps (no $sl_copy yet)"
   else
+    sl_dep_dir=$(dirname "$sl_copy")
     lib_stale=""
     for f in attribution.jq headroom-state.sh; do
-      if [ ! -f "$CLAUDE_DIR/lib/$f" ] || ! cmp -s "$PLUGIN_ROOT/scripts/lib/$f" "$CLAUDE_DIR/lib/$f"; then
+      # Resolve each dep exactly as statusline.sh does — by EXISTENCE, lib/ first,
+      # else the flat sibling next to the copy actually wired (canonical or
+      # custom-path), then currency-check only the file it would load.
+      # A plain "lib matches OR flat matches" would green a stale lib/ copy that
+      # shadows a current flat sibling: statusline.sh sources the stale lib/ one
+      # (it takes lib/ the moment the file exists, content-blind) and never falls
+      # through, so the badge would silently run on the stale dep.
+      if   [ -f "$sl_dep_dir/lib/$f" ]; then dep="$sl_dep_dir/lib/$f"
+      elif [ -f "$sl_dep_dir/$f" ];     then dep="$sl_dep_dir/$f"
+      else dep=""; fi
+      if [ -n "$dep" ] && cmp -s "$PLUGIN_ROOT/scripts/lib/$f" "$dep"; then
+        :   # the exact file statusline.sh loads is present and current
+      else
         lib_stale="$lib_stale $f"
       fi
     done
     if [ -z "$lib_stale" ]; then
-      say ok "statusline lib deps current ($CLAUDE_DIR/lib: attribution.jq, headroom-state.sh)"
+      say ok "statusline lib deps current (attribution.jq, headroom-state.sh)"
+    elif [ "$sl_custom_copy" -eq 1 ]; then
+      say FAIL "statusline lib deps at $sl_dep_dir missing/stale —$lib_stale (custom-path install is yours to update; doctor will not write there)"
     elif [ "$FIX" -eq 1 ]; then
       mkdir -p "$CLAUDE_DIR/lib"
       if cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" \
