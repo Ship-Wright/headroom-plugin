@@ -7,7 +7,7 @@
     {
       "name": "headroom-usage-indicator",
       "description": "Status-line indicator showing whether the headroom MCP context-compression is being used this session — idle until headroom_compress runs, then active with the tokens AND money it saved (priced against the session model), decaying back to idle after a quiet period. Tracks an all-time money-saved total across sessions. Idle badges also nudge with a count of large tool results that went uncompressed, and a broken badge state surfaces silent engine failures (SessionStart micro-doctor included). Includes Dangi, a real-time PostToolUse detector that sizes file-backed blobs at the source and routes advice by size (compress in place vs delegate to a subagent), learns offender files the gate then blocks regardless of extension, and a Stop-hook session ledger that prices what each session saved AND left on the table. The PreToolUse gate rewrites raw `cat` of big structured files into hcat automatically, with a lossless TOON-lite tier that works even without the Python engine.",
-      "version": "2.7.3",
+      "version": "2.7.4",
       "source": "./",
       "author": {
         "name": "Abhishek"
