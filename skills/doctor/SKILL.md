@@ -23,7 +23,10 @@ hook entries still registered in `~/.claude/settings.json`,
 directory with `DOCTOR_PROJECT_DIR`, default the current working directory) —
 they all double-fire alongside the plugin-native hooks — the statusLine
 wiring, that the `~/.claude/headroom-statusline.sh` copy matches the plugin's
-script, stale pre-plugin script copies in `~/.claude`, and whether a recorded
+script **and that its `~/.claude/lib/` runtime deps (`attribution.jq`,
+`headroom-state.sh`) are present and current** (without them the badge is
+stuck at a permanent "idle" showing zero savings), stale pre-plugin script
+copies in `~/.claude`, and whether a recorded
 ambient-health failure (the `last-error` file that flips the statusline badge
 to "broken") can now be cleared.
 
@@ -70,6 +73,9 @@ Each line is aligned `<status> - <what>`:
     is preserved under `_headroomStatusLineBackup` and chained ahead of the
     badge, never clobbered
   - stale statusline copy → refreshed from the plugin's `scripts/statusline.sh`
+  - missing/stale statusline lib deps → `attribution.jq` and
+    `headroom-state.sh` (re)installed into `~/.claude/lib/`; these are what the
+    badge needs to attribute savings, so without them it silently reads zero
   - stale `~/.claude` copies → deleted, but only once plugin-native hooks are
     confirmed and no legacy entries remain in `settings.json`,
     `settings.local.json`, or the current project's settings — project-level

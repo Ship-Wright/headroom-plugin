@@ -762,6 +762,15 @@ if cmp -s "$ROOT/scripts/statusline.sh" "$CD4/headroom-statusline.sh"; then
 else
   echo "FAIL - fix: statusline script copied"; FAIL=$((FAIL+1))
 fi
+# issue #2: statusline.sh needs its lib/ deps next to the copy, or compute()
+# silently degrades to a permanent idle badge. --fix must provision them.
+if cmp -s "$ROOT/scripts/lib/attribution.jq" "$CD4/lib/attribution.jq" \
+   && cmp -s "$ROOT/scripts/lib/headroom-state.sh" "$CD4/lib/headroom-state.sh"; then
+  echo "ok - fix: statusline lib deps provisioned (issue #2)"; PASS=$((PASS+1))
+else
+  echo "FAIL - fix: statusline lib deps provisioned (issue #2)"; FAIL=$((FAIL+1))
+fi
+check "fix: doctor reports lib deps current" "statusline lib deps current" "$out"
 if [ -e "$CD4/dangi-hook.sh" ] || [ -e "$CD4/hcat-gate.sh" ] || [ -e "$CD4/hcat" ]; then
   echo "FAIL - fix: stale copies removed"; FAIL=$((FAIL+1))
 else
@@ -1202,6 +1211,26 @@ if cmp -s "$F7C/cd/headroom-statusline.sh" "$ROOT/scripts/statusline.sh" && [ -x
   echo "ok - f7c: --fix refreshes the copy from the plugin"; PASS=$((PASS+1))
 else
   echo "FAIL - f7c: --fix refreshes the copy from the plugin"; FAIL=$((FAIL+1))
+fi
+
+# F7e: the exact issue #2 shape — statusline copy is CURRENT but its lib/ deps
+# are MISSING. The old doctor reported all-ok here while the badge was
+# structurally stuck at "idle" showing zero. The dedicated check must flag it
+# read-only, and --fix must provision attribution.jq + headroom-state.sh.
+F7E="$REVD/f7e"; mkdir -p "$F7E/cd"
+doc_settings_wired "$F7E/cd" > "$F7E/settings.json"
+cp "$ROOT/scripts/statusline.sh" "$F7E/cd/headroom-statusline.sh"   # copy already current
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7E/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7E/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check "f7e: current copy, missing lib deps → fixable" "statusline lib deps missing/stale" "$out"
+check "f7e: statusline copy itself still reported current" "statusline copy is current" "$out"
+HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7E/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7E/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+if cmp -s "$ROOT/scripts/lib/attribution.jq" "$F7E/cd/lib/attribution.jq" \
+   && cmp -s "$ROOT/scripts/lib/headroom-state.sh" "$F7E/cd/lib/headroom-state.sh"; then
+  echo "ok - f7e: --fix provisions the missing lib deps (issue #2)"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7e: --fix provisions the missing lib deps (issue #2)"; FAIL=$((FAIL+1))
 fi
 
 # F8: .mcp.json quotes CLAUDE_PLUGIN_ROOT exactly like hooks.json does
