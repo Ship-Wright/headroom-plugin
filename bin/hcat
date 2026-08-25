@@ -103,7 +103,7 @@ if [ -z "$PY" ] || [ ! -x "$PY" ]; then
   # A never-installed engine is the ordinary idle state, NOT a breakage — only
   # a resolved-but-dead explicit override records a broken badge (PY is
   # non-empty here exactly when HCAT_PYTHON points at a non-executable).
-  [ -n "$PY" ] && note_error engine "hcat: HCAT_PYTHON is not executable ($PY) — run /doctor"
+  [ -n "$PY" ] && note_error engine "hcat: HCAT_PYTHON is not executable ($PY) — run /headroom-usage-indicator:doctor"
   exit 3
 fi
 
@@ -159,7 +159,7 @@ try:
     result = compress([{"role": "tool", "content": raw}])
 except Exception as e:
     print(f"hcat: compression failed: {e}", file=sys.stderr)
-    _note_error("runtime", f"hcat: compression failed: {e} — run /doctor")
+    _note_error("runtime", f"hcat: compression failed: {e} — run /headroom-usage-indicator:doctor")
     sys.exit(4)
 _clear_error()
 
