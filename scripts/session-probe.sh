@@ -21,6 +21,7 @@ type note_error >/dev/null 2>&1 || note_error() { :; }
 [ -n "${STATE_DIR:-}" ] || STATE_DIR="${HEADROOM_STATE_DIR:-${HOME:-${TMPDIR:-/tmp}}/.claude/headroom-indicator}"
 
 problems=""
+setup=""
 add_problem() { problems="${problems:+$problems; }$1"; }
 
 # --- 1. jq — every hook and the badge lean on it
@@ -89,12 +90,41 @@ if [ -z "$problems" ] && [ -f "$STATE_DIR/last-error" ]; then
   fi
 fi
 
+# --- 5b. status line not wired yet — the one setup step a plugin can't perform
+# for you: Claude Code has no plugin field for the status line, so wiring it means
+# writing the user's settings.json, which only /doctor does (with consent). A
+# freshly installed plugin therefore shows no badge until that step. Nudge about
+# it — but only when everything else is healthy: a broken toolchain is the bigger
+# fish, and /doctor --fix wires the status line while repairing it anyway. This is
+# a setup reminder, never a breakage: it does not write last-error or flip the
+# badge to "broken".
+if [ -z "$problems" ] && command -v jq >/dev/null 2>&1; then
+  SETTINGS="${HEADROOM_SETTINGS:-${HOME:-}/.claude/settings.json}"
+  CLAUDE_DIR=$(dirname "$SETTINGS")
+  sl_cmd=""
+  [ -f "$SETTINGS" ] && { sl_cmd=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null) || sl_cmd=""; }
+  case "$sl_cmd" in
+    *headroom-statusline.sh*)
+      # Wired — but the badge resolves attribution.jq from a lib/ dir (or a flat
+      # sibling) next to its copy; without it compute() reads a permanent zero
+      # (issue #2). Nudge if a wired copy is missing those deps.
+      if [ -f "$CLAUDE_DIR/headroom-statusline.sh" ] \
+         && [ ! -f "$CLAUDE_DIR/lib/attribution.jq" ] && [ ! -f "$CLAUDE_DIR/attribution.jq" ]; then
+        setup="status line badge is missing its deps and will read zero — run /headroom-usage-indicator:doctor --fix"
+      fi
+      ;;
+    *)
+      setup="status line badge isn't set up yet — run /headroom-usage-indicator:doctor --fix to show it"
+      ;;
+  esac
+fi
+
 # --- 6. healthy and quiet? surface the previous session's invoice, once.
 # The ledger hook (Stop/SessionEnd) records what each session saved and what
 # it burned; the next session start is the natural moment to show the bill.
 LEDGER="$STATE_DIR/ledger.jsonl"
 invoice=""
-if [ -z "$problems" ] && [ -f "$LEDGER" ] && command -v jq >/dev/null 2>&1; then
+if [ -z "$problems" ] && [ -z "$setup" ] && [ -f "$LEDGER" ] && command -v jq >/dev/null 2>&1; then
   last=$(tail -1 "$LEDGER" 2>/dev/null) || last=""
   key=$(printf '%s' "$last" | jq -r '"\(.session_id)|\(.ts)"' 2>/dev/null) || key=""
   mark=$(cat "$STATE_DIR/last-invoice-mark" 2>/dev/null) || mark=""
@@ -118,6 +148,10 @@ if [ -n "$problems" ] && command -v jq >/dev/null 2>&1; then
   jq -cn --arg p "$problems" \
     '{hookSpecificOutput:{hookEventName:"SessionStart",
       additionalContext:("🤖 headroom probe: " + $p)}}' 2>/dev/null
+elif [ -n "$setup" ] && command -v jq >/dev/null 2>&1; then
+  jq -cn --arg p "$setup" \
+    '{hookSpecificOutput:{hookEventName:"SessionStart",
+      additionalContext:("🤖 headroom setup: " + $p)}}' 2>/dev/null
 elif [ -n "$invoice" ]; then
   jq -cn --arg p "$invoice" \
     '{hookSpecificOutput:{hookEventName:"SessionStart",
