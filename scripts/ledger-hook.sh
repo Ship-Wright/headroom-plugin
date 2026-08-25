@@ -83,7 +83,7 @@ snap=$(jq -crs -L "$JQ_LIB" --arg tool "$TOOL" --arg pfx "$HPREFIX" --argjson mi
   | ($res | map(select($mset[.id] // false)
       | (try (.t | fromjson.tokens_saved) catch 0) // 0)) as $msav
   | ($res | map(select((($hpset[.id] // false) | not)
-      and (is_genuine | not)
+      and ((is_genuine and (.t | is_compressed_receipt)) | not)
       and (((($uidx[.id] // {}).name // "") as $n | (exempt_tools | index($n)) == null))
       and ((.t | length) >= $min))
       | {id: .id, bytes: (.t | length)})) as $missed_raw

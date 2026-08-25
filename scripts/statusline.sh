@@ -118,7 +118,7 @@ compute() {
         | (try (.t | fromjson.tokens_saved) catch 0) // 0) | add // 0) as $saved
     | ($res | map(select((($hpset[.id] // false) | not)
         and (($eset[.id] // false) | not)
-        and (is_genuine | not)
+        and ((is_genuine and (.t | is_compressed_receipt)) | not)
         and ((.t | length) >= $min))) | length) as $big
     | idset($rcpt | map(.id)) as $ridx
     | ([.[] | select(.timestamp)
