@@ -1233,6 +1233,21 @@ else
   echo "FAIL - f7e: --fix provisions the missing lib deps (issue #2)"; FAIL=$((FAIL+1))
 fi
 
+# F7f: dual-layout — statusline.sh resolves its deps from EITHER a lib/ subdir OR
+# flat siblings next to the copy (see scripts/statusline.sh's resolution loop),
+# and the v2.7 legacy full-manual installer provisions them FLAT. A healthy flat
+# install must NOT be reported "missing/stale": that cry-wolf misleads the user
+# and, via a spurious FIXABLE, blocks the ambient-health all-clear (block 9).
+F7F="$REVD/f7f"; mkdir -p "$F7F/cd"
+doc_settings_wired "$F7F/cd" > "$F7F/settings.json"
+cp "$ROOT/scripts/statusline.sh" "$F7F/cd/headroom-statusline.sh"        # copy current
+cp "$ROOT/scripts/lib/attribution.jq"    "$F7F/cd/attribution.jq"        # deps as FLAT siblings,
+cp "$ROOT/scripts/lib/headroom-state.sh" "$F7F/cd/headroom-state.sh"     # not under lib/
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7F/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7F/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7f: flat-layout lib deps reported current"        "statusline lib deps current"       "$out"
+check_absent "f7f: healthy flat install not cried wolf as stale" "statusline lib deps missing/stale" "$out"
+
 # F8: .mcp.json quotes CLAUDE_PLUGIN_ROOT exactly like hooks.json does
 check "f8: .mcp.json command quoted like hooks.json" \
       '"${CLAUDE_PLUGIN_ROOT}"/scripts/mcp-launcher.sh' \

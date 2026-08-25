@@ -423,20 +423,27 @@ JQEOF
   fi
 
   # 7c. statusline.sh's runtime deps (attribution.jq + headroom-state.sh) must sit
-  # in a lib/ dir next to the installed copy, or compute() silently degrades to a
-  # permanent idle badge showing zero savings (issue #2). The plain cmp in 7b only
-  # covers the script itself — these are separate files and were never provisioned.
+  # next to the installed copy, or compute() silently degrades to a permanent idle
+  # badge showing zero savings (issue #2). The plain cmp in 7b only covers the
+  # script itself — these are separate files and were never provisioned.
+  # statusline.sh resolves each dep from EITHER a lib/ subdir OR a flat sibling
+  # (the legacy full-manual install layout), preferring lib/. Mirror that here so
+  # a healthy flat install is not falsely flagged (which would also block block 9's
+  # ambient-health all-clear via a spurious FIXABLE).
   if [ ! -f "$sl_copy" ]; then
     say skip "statusline lib deps (no $sl_copy yet)"
   else
     lib_stale=""
     for f in attribution.jq headroom-state.sh; do
-      if [ ! -f "$CLAUDE_DIR/lib/$f" ] || ! cmp -s "$PLUGIN_ROOT/scripts/lib/$f" "$CLAUDE_DIR/lib/$f"; then
+      if { [ -f "$CLAUDE_DIR/lib/$f" ] && cmp -s "$PLUGIN_ROOT/scripts/lib/$f" "$CLAUDE_DIR/lib/$f"; } \
+         || { [ -f "$CLAUDE_DIR/$f" ] && cmp -s "$PLUGIN_ROOT/scripts/lib/$f" "$CLAUDE_DIR/$f"; }; then
+        :   # present & current under lib/, or as a flat sibling — statusline.sh finds it
+      else
         lib_stale="$lib_stale $f"
       fi
     done
     if [ -z "$lib_stale" ]; then
-      say ok "statusline lib deps current ($CLAUDE_DIR/lib: attribution.jq, headroom-state.sh)"
+      say ok "statusline lib deps current (attribution.jq, headroom-state.sh)"
     elif [ "$FIX" -eq 1 ]; then
       mkdir -p "$CLAUDE_DIR/lib"
       if cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" \
