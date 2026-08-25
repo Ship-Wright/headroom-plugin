@@ -345,7 +345,27 @@ else
   if [ "$SETTINGS_OK" -eq 0 ]; then
     say skip "statusLine (settings.json unparseable — repair it first)"
   elif printf '%s' "$sl" | grep -q "headroom-statusline"; then
-    say ok "statusLine wired ($sl)"
+    # settings.json points at the badge, but a bare string match is not proof the
+    # script is on disk. If the wired copy is missing the statusLine renders nothing,
+    # yet 7b/7c would only `skip` (guarded on the same absent file) and block 9 would
+    # then clear any recorded failure — a silent pass. Require the file to exist.
+    if [ -f "$CLAUDE_DIR/headroom-statusline.sh" ]; then
+      say ok "statusLine wired ($sl)"
+    elif [ "$FIX" -eq 1 ]; then
+      mkdir -p "$CLAUDE_DIR/lib"
+      cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
+      cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" 2>/dev/null || true
+      [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
+        && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
+      if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$CLAUDE_DIR/headroom-statusline.sh" \
+         && chmod +x "$CLAUDE_DIR/headroom-statusline.sh"; then
+        say fixed "re-copied the missing statusline script to $CLAUDE_DIR/headroom-statusline.sh (settings already pointed at it)"
+      else
+        say FAIL "could not re-copy statusline.sh to $CLAUDE_DIR/headroom-statusline.sh"
+      fi
+    else
+      say fixable "statusLine points at headroom-statusline.sh but the script is missing from $CLAUDE_DIR — --fix re-copies it"
+    fi
   elif [ "$FIX" -eq 1 ]; then
     mkdir -p "$CLAUDE_DIR"
     [ -f "$SETTINGS" ] || printf '{}\n' > "$SETTINGS"
@@ -435,9 +455,17 @@ JQEOF
   else
     lib_stale=""
     for f in attribution.jq headroom-state.sh; do
-      if { [ -f "$CLAUDE_DIR/lib/$f" ] && cmp -s "$PLUGIN_ROOT/scripts/lib/$f" "$CLAUDE_DIR/lib/$f"; } \
-         || { [ -f "$CLAUDE_DIR/$f" ] && cmp -s "$PLUGIN_ROOT/scripts/lib/$f" "$CLAUDE_DIR/$f"; }; then
-        :   # present & current under lib/, or as a flat sibling — statusline.sh finds it
+      # Resolve each dep exactly as statusline.sh does — by EXISTENCE, lib/ first,
+      # else the flat sibling — then currency-check only the file it would load.
+      # A plain "lib matches OR flat matches" would green a stale lib/ copy that
+      # shadows a current flat sibling: statusline.sh sources the stale lib/ one
+      # (it takes lib/ the moment the file exists, content-blind) and never falls
+      # through, so the badge would silently run on the stale dep.
+      if   [ -f "$CLAUDE_DIR/lib/$f" ]; then dep="$CLAUDE_DIR/lib/$f"
+      elif [ -f "$CLAUDE_DIR/$f" ];     then dep="$CLAUDE_DIR/$f"
+      else dep=""; fi
+      if [ -n "$dep" ] && cmp -s "$PLUGIN_ROOT/scripts/lib/$f" "$dep"; then
+        :   # the exact file statusline.sh loads is present and current
       else
         lib_stale="$lib_stale $f"
       fi

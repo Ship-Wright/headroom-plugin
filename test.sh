@@ -684,8 +684,13 @@ chmod +x "$FENG/python" "$FENG/headroom"
 
 # 32a. healthy read-only run against the real engine
 if [ -n "$HEADROOM_PY" ]; then
-  CD1="$DOCD/cd1"; mkdir -p "$CD1"
+  CD1="$DOCD/cd1"; mkdir -p "$CD1/lib"
   S1="$DOCD/s1.json"; doc_settings_wired "$CD1" > "$S1"
+  # a truly-healthy install has the wired script AND its lib deps on disk, not just
+  # a settings.json pointer (see check 7's wired-but-missing guard + 7b/7c)
+  cp "$ROOT/scripts/statusline.sh" "$CD1/headroom-statusline.sh"
+  cp "$ROOT/scripts/lib/attribution.jq"    "$CD1/lib/"
+  cp "$ROOT/scripts/lib/headroom-state.sh" "$CD1/lib/"
   out=$(HCAT_PYTHON="$HEADROOM_PY" DOCTOR_SETTINGS="$S1" DOCTOR_CLAUDE_DIR="$CD1" \
         DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" 2>&1); rc=$?
   check "doctor: healthy engine"          "engine python"   "$out"
@@ -1245,8 +1250,68 @@ cp "$ROOT/scripts/lib/attribution.jq"    "$F7F/cd/attribution.jq"        # deps 
 cp "$ROOT/scripts/lib/headroom-state.sh" "$F7F/cd/headroom-state.sh"     # not under lib/
 out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7F/settings.json" \
       DOCTOR_CLAUDE_DIR="$F7F/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
-check        "f7f: flat-layout lib deps reported current"        "statusline lib deps current"       "$out"
-check_absent "f7f: healthy flat install not cried wolf as stale" "statusline lib deps missing/stale" "$out"
+check "f7f: flat-layout lib deps reported current" "statusline lib deps current" "$out"
+
+# F7g: a stale lib/ dep must NOT be masked by a current flat sibling. statusline.sh
+# loads lib/ by existence (content-blind) and never falls through, so a stale
+# lib/attribution.jq shadows a current flat one — 7c must report it stale. An
+# OR-of-matches check would wrongly green on the flat match; this is the red-green
+# for the existence-first resolution fix.
+F7G="$REVD/f7g"; mkdir -p "$F7G/cd/lib"
+doc_settings_wired "$F7G/cd" > "$F7G/settings.json"
+cp "$ROOT/scripts/statusline.sh" "$F7G/cd/headroom-statusline.sh"
+printf '# stale\n' > "$F7G/cd/lib/attribution.jq"                 # lib/ attribution present but STALE
+cp "$ROOT/scripts/lib/headroom-state.sh" "$F7G/cd/lib/"          # lib/ headroom-state current
+cp "$ROOT/scripts/lib/attribution.jq"    "$F7G/cd/attribution.jq" # flat attribution current (would-be shadow)
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7G/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7G/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7g: stale lib/ dep reported despite a current flat sibling" "statusline lib deps missing/stale" "$out"
+check_absent "f7g: stale-shadowed install not greened"                     "statusline lib deps current"       "$out"
+
+# F7h: a current lib/ dep is authoritative even when a stale flat sibling exists —
+# statusline.sh loads lib/ first, so 7c must stay "current" (guards against an
+# over-correction that would AND-require every layout to match).
+F7H="$REVD/f7h"; mkdir -p "$F7H/cd/lib"
+doc_settings_wired "$F7H/cd" > "$F7H/settings.json"
+cp "$ROOT/scripts/statusline.sh" "$F7H/cd/headroom-statusline.sh"
+cp "$ROOT/scripts/lib/attribution.jq"    "$F7H/cd/lib/"          # lib/ deps current
+cp "$ROOT/scripts/lib/headroom-state.sh" "$F7H/cd/lib/"
+printf '# stale\n' > "$F7H/cd/attribution.jq"                    # stale flat sibling must be ignored
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7H/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7H/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7h: current lib/ deps stay current despite a stale flat sibling" "statusline lib deps current"       "$out"
+check_absent "f7h: current lib/ not cried wolf over a stale flat sibling"        "statusline lib deps missing/stale" "$out"
+
+# F7i: the flat-sibling branch must currency-check, not just test existence — a
+# stale flat dep with no lib/ copy must still report "missing/stale" (guards a
+# regression that accepts a flat sibling merely because it exists, silently
+# reintroducing issue #2's zero-savings badge).
+F7I="$REVD/f7i"; mkdir -p "$F7I/cd"
+doc_settings_wired "$F7I/cd" > "$F7I/settings.json"
+cp "$ROOT/scripts/statusline.sh" "$F7I/cd/headroom-statusline.sh"
+printf '# stale\n' > "$F7I/cd/attribution.jq"                    # flat siblings present but STALE,
+printf '# stale\n' > "$F7I/cd/headroom-state.sh"                 # and no lib/ copies at all
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7I/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7I/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7i: stale flat deps reported missing/stale" "statusline lib deps missing/stale" "$out"
+check_absent "f7i: stale flat deps not greened"            "statusline lib deps current"       "$out"
+
+# F7j: wired-but-missing — settings.json points at headroom-statusline.sh but the
+# script isn't on disk. check 7 must report this fixable (not a silent "wired" ok
+# that lets block 9 clear the broken-badge flag); --fix must re-copy the script.
+F7J="$REVD/f7j"; mkdir -p "$F7J/cd"
+doc_settings_wired "$F7J/cd" > "$F7J/settings.json"              # wired, but NO script copied
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7J/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7J/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7j: wired-but-missing script reported fixable" "statusLine points at headroom-statusline.sh but the script is missing" "$out"
+check_absent "f7j: wired-but-missing not silently wired-ok"   "statusLine wired ("                                                    "$out"
+HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7J/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7J/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+if cmp -s "$ROOT/scripts/statusline.sh" "$F7J/cd/headroom-statusline.sh"; then
+  echo "ok - f7j: --fix re-copies the missing statusline script"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7j: --fix re-copies the missing statusline script"; FAIL=$((FAIL+1))
+fi
 
 # F8: .mcp.json quotes CLAUDE_PLUGIN_ROOT exactly like hooks.json does
 check "f8: .mcp.json command quoted like hooks.json" \
