@@ -56,7 +56,7 @@ Every second, it looks at what your Claude session has actually done and updates
 | `○ headroom idle (not compressing yet)` — or `○ headroom idle · 4 big blobs uncompressed` | 🔴 red | headroom hasn't compressed anything yet this session; the count appears when large tool outputs are going uncompressed |
 | `● headroom · ~2.4k tok · $0.01 · 3× \| $1.83 all-time  😴 dangi` | 🟢 green | a compression just happened — tokens saved, **money saved**, how many times, and your all-time total |
 | `○ headroom idle · ~2.4k tok · $0.01 · 3× · 2 missed \| $1.83 all-time  🤖 dangi: 2!` | ⚪ grey | quiet for 60s — dims, but keeps the totals; `· N missed` counts big results beyond what you've compressed |
-| `▲ headroom broken (engine) · run /doctor` | 🟡 yellow | a hook or `hcat` just recorded a real engine failure — takes over the badge until a clean `/doctor` run (or the next successful `hcat`) clears it (v2.7) |
+| `▲ headroom broken (engine) · run /doctor` | 🟡 yellow | a hook or `hcat` just recorded a real engine failure — takes over the badge until a clean `/headroom-usage-indicator:doctor` run (or the next successful `hcat`) clears it (v2.7) |
 
 - The **token count is the running total for the whole session** (it adds up every compression).
 - It **resets to red** when you start a brand-new Claude session.
