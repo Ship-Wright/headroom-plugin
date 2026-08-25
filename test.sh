@@ -1364,6 +1364,17 @@ check_eq "health: gate broken engine exit 0"       "0"    "$rc"
 check_absent "health: gate broken engine fails open" "deny" "$out"
 check "health: gate recorded the breakage" "import failed" \
       "$(cat "$HEADROOM_STATE_DIR/last-error" 2>/dev/null)"
+check "health: gate import-failed breakage names real doctor command" "headroom-usage-indicator:doctor" \
+      "$(cat "$HEADROOM_STATE_DIR/last-error" 2>/dev/null)"
+
+# gate with an HCAT_PYTHON pointing nowhere (not merely wrong) hits the
+# distinct "not executable" branch (as opposed to "import failed" above)
+rm -f "$HEADROOM_STATE_DIR/last-error"
+out=$(gate_input "$big_h" health-g2 | HCAT_PYTHON=/nonexistent/python bash "$ROOT/scripts/hcat-gate.sh"); rc=$?
+check_eq "health: gate not-executable engine exit 0" "0" "$rc"
+check_absent "health: gate not-executable engine fails open" "deny" "$out"
+check "health: gate not-executable breakage names real doctor command" "headroom-usage-indicator:doctor" \
+      "$(cat "$HEADROOM_STATE_DIR/last-error" 2>/dev/null)"
 
 # hooks.json registers the SessionStart probe
 jq -e '.hooks.SessionStart[0].hooks[0].command | contains("session-probe.sh")' \
@@ -1387,6 +1398,7 @@ check_eq "health: probe exit 0" "0" "$rc"
 rm -f "$HEADROOM_STATE_DIR/last-error"
 out=$(env -u HCAT_PYTHON HOME="$TMP/nohome" PATH="$STUB:/usr/bin:/bin" bash "$PROBE")
 check "health: probe notes missing engine" "not installed" "$out"
+check "health: probe missing-engine nudge names real doctor command" "headroom-usage-indicator:doctor --fix" "$out"
 if [ -f "$HEADROOM_STATE_DIR/last-error" ]; then
   echo "FAIL - health: missing engine must not write last-error"; FAIL=$((FAIL+1))
 else
@@ -1397,6 +1409,7 @@ fi
 printf '%s runtime hcat: compression failed: boom\n' "$(date +%s)" > "$HEADROOM_STATE_DIR/last-error"
 out=$(HCAT_PYTHON=/usr/bin/true bash "$PROBE")
 check "health: probe surfaces recorded failure" "recent failure" "$out"
+check "health: probe recent-failure nudge names real doctor command" "headroom-usage-indicator:doctor" "$out"
 
 # probe: status line not wired yet → one-line setup nudge (the "I installed it,
 # why is there no badge?" case). Must be a setup line, not a breakage, and must
@@ -1457,6 +1470,18 @@ out=$(HCAT_PYTHON=/nonexistent/python DOCTOR_SETTINGS="$S2" DOCTOR_CLAUDE_DIR="$
       DOCTOR_VENV_DIR="$DOCD/none" bash "$DOCTOR" 2>&1)
 check "health: doctor keeps state while fixable" "failure state kept" "$out"
 rm -f "$HEADROOM_STATE_DIR/last-error"
+
+# 38b. static regression guard: two doctor-command messages this suite cannot
+# trigger dynamically without extra fixture machinery -- session-probe.sh's
+# hcat-missing/not-executable check resolves $HCAT relative to the script's
+# own directory (not overridable via env var short of an isolated script
+# copy), and doctor.sh's "NEW failure recorded while this run was in
+# progress" message is a genuine concurrent-write race. Read the shipped
+# source directly instead.
+check "session-probe: hcat-missing message names real doctor command" \
+      "reinstall the plugin or run /headroom-usage-indicator:doctor" "$(cat "$PROBE" 2>/dev/null)"
+check "doctor.sh: concurrent-failure message names real doctor command" \
+      "badge kept broken; run /headroom-usage-indicator:doctor again" "$(cat "$DOCTOR" 2>/dev/null)"
 
 # --- 39. dangi router: true-size detection + tiered compress/delegate advice (v2.7)
 export HEADROOM_STATE_DIR="$TMP/state-router"
