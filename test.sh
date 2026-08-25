@@ -928,6 +928,56 @@ genuine_event gb "jq -c . /tmp/x.json | hcat /dev/stdin" > "$TMP/t_rpipe.jsonl"
 out=$(badge "$TMP/t_rpipe.jsonl" claude-opus-4-8 sess-rg2)
 check "review: piped hcat counts" "●" "$out"
 
+# --- gate-rewritten `cat` must be attributed (the rewrite is invisible in tool_use)
+# The PreToolUse gate turns a raw `cat <big file>` into an hcat run via
+# updatedInput. Claude Code RUNS the rewritten command but records the ORIGINAL
+# `cat …` in the assistant's tool_use — so a transcript pass that only reads
+# tool_use commands sees `cat`, fails the genuineness check, and scores a real
+# compression as a MISS (badge blames the user for the savings it just made).
+# The rewrite is recoverable from the hook_success attachment, keyed by
+# toolUseID, that carries the gate's own stdout.
+rewritten_event() {  # rewritten_event <tool-use-id> <recorded-command> <rewritten-command> [pad-bytes]
+  # The pad matters: it pushes the receipt past NUDGE_BYTES so an unattributed
+  # receipt is scored as a big MISSED blob. Without it the "not a miss"
+  # assertion below would pass even unpatched and prove nothing.
+  local pad=""
+  [ -n "${4:-}" ] && pad=$(head -c "$4" /dev/zero | tr '\0' 'y')
+  jq -cn --arg id "$1" --arg orig "$2" --arg now "$NOW" \
+    '{timestamp:$now,message:{content:[{type:"tool_use",id:$id,name:"Bash",input:{command:$orig}}]}}'
+  jq -cn --arg id "$1" --arg new "$3" \
+    '{type:"attachment",attachment:{type:"hook_success",hookName:"PreToolUse:Bash",
+      hookEvent:"PreToolUse",toolUseID:$id,stderr:"",exitCode:0,
+      stdout:({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",
+        permissionDecisionReason:"🤖 hcat-gate: rewrote the raw `cat`",
+        updatedInput:{command:$new}}}|tojson)}}'
+  jq -cn --arg id "$1" --arg pad "$pad" \
+    '{message:{content:[{type:"tool_result",tool_use_id:$id,content:[{type:"text",
+      text:("── hcat: /tmp/x.json · 10 lines · 5.0 KB · ~1000 tok → ~400 tok (60.0% saved) · original on disk\n" + $pad)}]}]}}'
+}
+rewritten_event gw1 "cat /tmp/x.json" "hcat \"/tmp/x.json\"" 6000 > "$TMP/t_rewritten.jsonl"
+out=$(badge "$TMP/t_rewritten.jsonl" claude-opus-4-8 sess-gw1)
+check        "rewrite: gate-rewritten cat is attributed" "●"   "$out"
+check        "rewrite: its savings are counted"          "600" "$out"
+check        "rewrite: counted once"                     "1×"  "$out"
+check_absent "rewrite: not scored as an uncompressed blob" "uncompressed" "$out"
+
+# Negative 1: an attachment that did NOT rewrite to hcat must not launder a
+# quoted receipt into a genuine compression.
+rewritten_event gw2 "cat /tmp/x.json" "cat /tmp/x.json" > "$TMP/t_norewrite.jsonl"
+out=$(badge "$TMP/t_norewrite.jsonl" claude-opus-4-8 sess-gw2)
+check_absent "rewrite: unrewritten cat still not attributed" "●"   "$out"
+check_absent "rewrite: unrewritten cat banks no savings"     "600" "$out"
+
+# Negative 2: a hook whose output merely MENTIONS hcat in prose (no
+# updatedInput) must not count — the check reads the announced command, not text.
+jq -cn --arg now "$NOW" '{timestamp:$now,message:{content:[{type:"tool_use",id:"gw3",name:"Bash",input:{command:"cat /tmp/x.json"}}]}}' > "$TMP/t_prose.jsonl"
+jq -cn '{type:"attachment",attachment:{type:"hook_success",hookName:"PreToolUse:Bash",hookEvent:"PreToolUse",toolUseID:"gw3",stderr:"",exitCode:0,
+  stdout:({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",permissionDecisionReason:"run hcat \"/tmp/x.json\" instead"}}|tojson)}}' >> "$TMP/t_prose.jsonl"
+jq -cn '{message:{content:[{type:"tool_result",tool_use_id:"gw3",content:[{type:"text",text:"── hcat: /tmp/x.json · 10 lines · 5.0 KB · ~1000 tok → ~400 tok (60.0% saved) · original on disk"}]}]}}' >> "$TMP/t_prose.jsonl"
+out=$(badge "$TMP/t_prose.jsonl" claude-opus-4-8 sess-gw3)
+check_absent "rewrite: hcat named only in hook prose is not attributed" "●"   "$out"
+check_absent "rewrite: hook prose banks no savings"                     "600" "$out"
+
 # dangi, same attack: quoting a receipt in a grep is still a missed opportunity...
 out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"rev-d1",
   tool_input:{command:"grep -rn hcat-header notes"},
