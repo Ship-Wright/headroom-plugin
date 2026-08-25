@@ -1304,6 +1304,15 @@ PROBE="$ROOT/scripts/session-probe.sh"
 export HEADROOM_STATE_DIR="$TMP/state-health"
 mkdir -p "$HEADROOM_STATE_DIR"
 
+# Hermetic status-line state for the probe's setup-nudge check: a wired
+# settings.json whose script copy + lib deps are present, so a healthy run stays
+# silent regardless of the real ~/.claude on this machine. Individual tests below
+# override HEADROOM_SETTINGS to exercise the unwired / missing-dep nudges.
+PROBE_CD="$TMP/probe-claude"; mkdir -p "$PROBE_CD/lib"
+printf '{"statusLine":{"type":"command","command":"bash \\"%s/headroom-statusline.sh\\""}}' "$PROBE_CD" > "$PROBE_CD/settings.json"
+: > "$PROBE_CD/headroom-statusline.sh"; : > "$PROBE_CD/lib/attribution.jq"
+export HEADROOM_SETTINGS="$PROBE_CD/settings.json"
+
 # hcat with a dead HCAT_PYTHON records an engine error (and still exits 3)
 printf '{"a":1}\n' > "$TMP/health.json"
 HCAT_PYTHON=/nonexistent/python bash "$ROOT/bin/hcat" "$TMP/health.json" >/dev/null 2>&1; rc=$?
@@ -1362,6 +1371,34 @@ fi
 printf '%s runtime hcat: compression failed: boom\n' "$(date +%s)" > "$HEADROOM_STATE_DIR/last-error"
 out=$(HCAT_PYTHON=/usr/bin/true bash "$PROBE")
 check "health: probe surfaces recorded failure" "recent failure" "$out"
+
+# probe: status line not wired yet → one-line setup nudge (the "I installed it,
+# why is there no badge?" case). Must be a setup line, not a breakage, and must
+# NOT write last-error (an unfinished setup step is not an engine failure).
+rm -f "$HEADROOM_STATE_DIR/last-error"
+uwd="$TMP/probe-unwired"; mkdir -p "$uwd"; printf '{}' > "$uwd/settings.json"
+out=$(HCAT_PYTHON=/usr/bin/true HEADROOM_SETTINGS="$uwd/settings.json" bash "$PROBE")
+check "health: probe nudges an unwired status line" "status line" "$out"
+check "health: setup nudge points at doctor --fix"  "doctor --fix"  "$out"
+check "health: setup nudge is a setup line"          "headroom setup" "$out"
+if [ -f "$HEADROOM_STATE_DIR/last-error" ]; then
+  echo "FAIL - health: unwired status line must not write last-error"; FAIL=$((FAIL+1))
+else
+  echo "ok - health: unwired status line must not write last-error"; PASS=$((PASS+1))
+fi
+
+# probe: status line wired but the copy's lib deps are missing → surfaces the
+# exact issue-#2 shape (badge would read a permanent zero) with the same nudge.
+wmd="$TMP/probe-wiredmiss"; mkdir -p "$wmd"
+printf '{"statusLine":{"type":"command","command":"bash \\"%s/headroom-statusline.sh\\""}}' "$wmd" > "$wmd/settings.json"
+: > "$wmd/headroom-statusline.sh"   # copy present, but no lib/ next to it
+out=$(HCAT_PYTHON=/usr/bin/true HEADROOM_SETTINGS="$wmd/settings.json" bash "$PROBE")
+check "health: probe nudges wired-but-missing-deps" "missing its deps" "$out"
+
+# probe: fully wired + deps present (the exported fixture) → silent, no false nudge
+rm -f "$HEADROOM_STATE_DIR/last-error"
+out=$(HCAT_PYTHON=/usr/bin/true bash "$PROBE")
+check_eq "health: wired status line + deps stays silent" "" "$out"
 
 # a working compression clears engine/runtime errors (real engine required)
 if [ -n "$HEADROOM_PY" ]; then
