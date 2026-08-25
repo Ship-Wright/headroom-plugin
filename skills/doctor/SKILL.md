@@ -79,16 +79,21 @@ Each line is aligned `<status> - <what>`:
   - statusLine wired but script missing → `scripts/statusline.sh` re-copied to
     `~/.claude/headroom-statusline.sh` (settings already point at it, in any
     spelling — absolute or tilde), with its `lib/` deps re-provisioned (the
-    price table too, best-effort); if the wiring named the canonical file by a
-    respelling bash can never expand at render time (a quoted `~`),
-    `settings.json`'s `statusLine.command` is also rewritten to the absolute
-    path (its own timestamped backup first) — otherwise the file would exist
-    but the wired command would still never find it; the same wiring pointed
-    at a hand-edited custom path whose script is gone is reported `FAIL`
-    instead — the doctor will not guess where to place a copy; a custom path
-    whose script IS present but whose `lib/` deps are missing or stale is also
-    `FAIL`, not `fixable` — the doctor detects a custom install's health but
-    never writes into it
+    price table too, best-effort); the same wiring pointed at a hand-edited
+    custom path whose script is gone is reported `FAIL` instead — the doctor
+    will not guess where to place a copy; a custom path whose script IS
+    present but whose `lib/` deps are missing or stale, or whose script itself
+    is present but stale (differs from the plugin's current
+    `scripts/statusline.sh`), is likewise `FAIL`, not `fixable` — the doctor
+    detects a custom install's health but never writes into it
+  - statusLine names the canonical file by a respelling bash can never expand
+    at spawn time (a quoted `~`, which the shell never unwraps inside double
+    quotes) → `settings.json`'s `statusLine.command` is rewritten to the
+    absolute path (its own timestamped backup first) — this fires whether or
+    not the script already exists at `~/.claude/headroom-statusline.sh` (if
+    it's missing too, it's re-copied first, same as above); doctor never
+    reports this wiring as healthy even when the file is present, since the
+    wired command itself would still never resolve it
   - quoted `.mcp.json` command → literal quotes around `${CLAUDE_PLUGIN_ROOT}`
     stripped in place (timestamped `.bak.*` first) — MCP stdio commands are
     spawned without a shell, so the quotes 404 the launcher and the bundled
@@ -104,6 +109,10 @@ Each line is aligned `<status> - <what>`:
     was); the doctor notes that caveat when it deletes
 - `skip` — could not be checked (e.g. hcat smoke without an engine, or
   settings.json unparseable).
+- `note` — a supplementary caveat attached to the fixed/ok line just above it
+  (e.g. that stale-copy deletion only scanned this project's `.claude`
+  settings, not every project on disk); not counted toward the ok/fixable/
+  failed/skipped tally.
 
 Summarize for the user in one or two sentences: what is healthy, what is
 broken, what the doctor could fix.
@@ -117,12 +126,13 @@ Never run `--fix` unprompted. If anything is `fixable`, list exactly what
 timestamped backup; may create a venv and run pip; may delete stale script
 copies; may rewrite the plugin's bundled `.mcp.json` in place to unquote its
 command, with its own timestamped backup; may re-copy the statusline script
-plus its `lib/` deps and price table to `~/.claude` when settings already
-point at a missing canonical copy, and — only when that copy's wiring named
-it by a respelling bash can never expand — rewrite `statusLine.command` to
-the absolute path in the same settings.json backup; never writes into a
-doctor-detected custom-path install, only reports its health) and ask the
-user for consent. Only after they agree:
+plus its `lib/` deps and price table to `~/.claude` — both when wiring
+statusLine for the first time and when settings already point at a missing
+canonical copy; and may rewrite `statusLine.command` to an absolute path (same
+settings.json backup) whenever the wiring named the canonical file by a
+respelling bash can never expand — whether or not the script already exists;
+never writes into a doctor-detected custom-path install, only reports its
+health) and ask the user for consent. Only after they agree:
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.sh" --fix
