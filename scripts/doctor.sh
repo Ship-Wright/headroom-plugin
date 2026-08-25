@@ -12,6 +12,9 @@
 #                        merge-aware: an existing non-headroom command is kept
 #                        under _headroomStatusLineBackup and chained before the
 #                        badge (same semantics as the SKILL.md installer)
+#   * wired-missing copy — re-copy statusline.sh (+ lib deps, price table) to
+#                        ~/.claude when settings already point at the canonical
+#                        path but the script is absent
 #   * quoted mcp cmd   — strip literal quotes from the .mcp.json command
 #                        (.bak first); MCP commands are spawned without a
 #                        shell, so quotes break the launcher path
@@ -364,15 +367,31 @@ else
   if [ "$SETTINGS_OK" -eq 0 ]; then
     say skip "statusLine (settings.json unparseable — repair it first)"
   elif printf '%s' "$sl" | grep -q "headroom-statusline"; then
-    # A bare string match is not proof the script is on disk. Only second-guess OUR
-    # canonical path ($CLAUDE_DIR/headroom-statusline.sh — what the installer and
-    # --fix write): if that's the wired target but it's missing, the badge renders
-    # nothing while 7b/7c only `skip` (guarded on the same absent file) and block 9
-    # clears any recorded failure — a silent pass. A headroom-statusline.sh wired at
-    # some OTHER (hand-edited) path is theirs to own: trust it rather than cry wolf
-    # or drop an orphan copy at the canonical path settings don't reference.
-    if printf '%s' "$sl" | grep -qF "$CLAUDE_DIR/headroom-statusline.sh" \
-       && [ ! -f "$CLAUDE_DIR/headroom-statusline.sh" ]; then
+    # A bare string match is not proof the script is on disk. Extract every path
+    # token that names the statusline script — absolute, quoted-tilde, or a
+    # foreign home synced from dotfiles — expand a leading ~, and require at
+    # least one to exist; otherwise the badge renders nothing while 7b/7c only
+    # `skip` (guarded on the same absent file) and block 9 clears any recorded
+    # failure — a silent pass for every respelling of the canonical path. Only
+    # the canonical $CLAUDE_DIR copy is ours to re-copy under --fix; a script
+    # missing at a hand-edited custom path is a FAIL, not a fixable — the
+    # doctor won't guess where to place a copy (no-orphan policy), and a
+    # fixable that --fix cannot repair would break the fixable contract. A
+    # command with no extractable path token is trusted as wired.
+    sl_present=0; sl_seen=0; sl_canonical_missing=0; sl_custom_missing=""
+    while IFS= read -r sl_cand; do
+      [ -n "$sl_cand" ] || continue
+      sl_seen=1
+      # shellcheck disable=SC2088 # matching a LITERAL ~ the shell never expanded — we expand it here
+      case $sl_cand in "~/"*) sl_cand="$HOME/${sl_cand#"~/"}" ;; esac
+      if [ -f "$sl_cand" ]; then sl_present=1
+      elif [ "$sl_cand" = "$CLAUDE_DIR/headroom-statusline.sh" ]; then sl_canonical_missing=1
+      else sl_custom_missing=$sl_cand
+      fi
+    done < <(printf '%s\n' "$sl" | grep -oE "(~|/)[^\"' ]*headroom-statusline\.sh")
+    if [ "$sl_present" -eq 1 ] || [ "$sl_seen" -eq 0 ]; then
+      say ok "statusLine wired ($sl)"
+    elif [ "$sl_canonical_missing" -eq 1 ]; then
       if [ "$FIX" -eq 1 ]; then
         mkdir -p "$CLAUDE_DIR/lib"
         cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
@@ -389,7 +408,7 @@ else
         say fixable "statusLine points at $CLAUDE_DIR/headroom-statusline.sh but the script is missing — --fix re-copies it"
       fi
     else
-      say ok "statusLine wired ($sl)"
+      say FAIL "statusLine points at $sl_custom_missing but no such file exists — restore it or re-wire settings.json (--fix will not guess a custom location)"
     fi
   elif [ "$FIX" -eq 1 ]; then
     mkdir -p "$CLAUDE_DIR"

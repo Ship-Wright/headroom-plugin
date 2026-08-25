@@ -74,6 +74,12 @@ Each line is aligned `<status> - <what>`:
     (backup first); merge-aware: an existing non-headroom statusLine command
     is preserved under `_headroomStatusLineBackup` and chained ahead of the
     badge, never clobbered
+  - statusLine wired but script missing → `scripts/statusline.sh` re-copied to
+    `~/.claude/headroom-statusline.sh` (settings already point at it, in any
+    spelling — absolute or tilde), with its `lib/` deps and the price table
+    re-provisioned; the same wiring pointed at a hand-edited custom path whose
+    script is gone is reported `FAIL` instead — the doctor will not guess
+    where to place a copy
   - quoted `.mcp.json` command → literal quotes around `${CLAUDE_PLUGIN_ROOT}`
     stripped in place (timestamped `.bak.*` first) — MCP stdio commands are
     spawned without a shell, so the quotes 404 the launcher and the bundled
@@ -100,7 +106,11 @@ Never run `--fix` unprompted. If anything is `fixable`, list exactly what
 `~/.claude/settings.local.json`, and the current project's
 `.claude/settings.json` / `.claude/settings.local.json`, each with its own
 timestamped backup; may create a venv and run pip; may delete stale script
-copies) and ask the user for consent. Only after they agree:
+copies; may rewrite the plugin's bundled `.mcp.json` in place to unquote its
+command, with its own timestamped backup; and may re-copy the statusline
+script plus its `lib/` deps and price table to `~/.claude` when settings
+already point at a missing canonical copy) and ask the user for consent.
+Only after they agree:
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.sh" --fix

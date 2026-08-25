@@ -140,10 +140,10 @@ For the curious — after the Quickstart, here is where everything lives:
 | headroom engine (Python) | `~/.headroom-venv` (or your own install) | the doctor bootstraps it with your consent |
 | status line | `statusLine` in `~/.claude/settings.json`, pointing at a copy of `scripts/statusline.sh` at `~/.claude/headroom-statusline.sh` (with its `attribution.jq` + `headroom-state.sh` deps in `~/.claude/lib/`) | **the one manual step** — the doctor writes it for you (merge-aware: an existing custom status line is kept and backed up under `_headroomStatusLineBackup`), and provisions the `lib/` deps the badge needs to count savings (v2.7.1) |
 
-If you'd rather wire the status line by hand, the merge-aware installer lives in `skills/headroom-usage-indicator/SKILL.md`; the standalone entry it writes boils down to (with your real home directory in place of `~`):
+If you'd rather wire the status line by hand, the merge-aware installer lives in `skills/headroom-usage-indicator/SKILL.md`; the standalone entry it writes boils down to (with your real home directory in place of `/Users/you` — a `~` inside the quoted path would never be expanded):
 
 ```json
-"statusLine": { "type": "command", "command": "bash \"~/.claude/headroom-statusline.sh\"", "refreshInterval": 1 }
+"statusLine": { "type": "command", "command": "bash \"/Users/you/.claude/headroom-statusline.sh\"", "refreshInterval": 1 }
 ```
 
 If the badge doesn't appear at the bottom right away, type `/statusline` once to refresh — or it'll be there next session.

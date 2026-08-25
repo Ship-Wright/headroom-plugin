@@ -868,6 +868,12 @@ check "doctor skill: frontmatter name"     "name: doctor" "$(head -5 "$DSKILL" 2
 check "doctor skill: triggers on breakage" "not working"  "$(cat "$DSKILL" 2>/dev/null)"
 check "doctor skill: runs doctor.sh"       "doctor.sh"    "$(cat "$DSKILL" 2>/dev/null)"
 check "doctor skill: consent before --fix" "consent"      "$(cat "$DSKILL" 2>/dev/null)"
+# docs-parity: Step 3's consent list and the fixable lists must name every --fix
+# mutation — an agent following the skill verbatim must not under-disclose
+check "doctor skill: consent list names the .mcp.json rewrite"       "rewrite the plugin's bundled" "$(cat "$DSKILL" 2>/dev/null)"
+check "doctor skill: consent list names the statusline re-copy"      "re-copy the statusline"       "$(cat "$DSKILL" 2>/dev/null)"
+check "doctor skill: fixable list covers wired-but-missing re-copy"  "wired but script missing"     "$(cat "$DSKILL" 2>/dev/null)"
+check "doctor header: fixable list covers wired-but-missing re-copy" "wired-missing copy"           "$(head -30 "$DOCTOR" 2>/dev/null)"
 
 # --- 34. review fixes: badge + hooks
 export HEADROOM_STATE_DIR="$TMP/state-review"
@@ -1378,6 +1384,41 @@ if [ ! -f "$F7M/cd/headroom-statusline.sh" ]; then
   echo "ok - f7m: --fix drops no orphan copy at the canonical path"; PASS=$((PASS+1))
 else
   echo "FAIL - f7m: --fix drops no orphan copy at the canonical path"; FAIL=$((FAIL+1))
+fi
+
+# F7n: the wired-but-missing guard must catch ANY spelling of a missing script,
+# not just the literal $HOME-expanded canonical string. Two respellings that
+# previously fell through to a trust-only "statusLine wired" ok with the script
+# absent (letting block 9 clear a recorded failure — the same silent pass the
+# canonical guard closes): (a) the quoted-tilde canonical form README shows for
+# hand wiring — canonical once ~ is expanded, so it takes the fixable/re-copy
+# branch; (b) a foreign-home absolute path synced from another machine's
+# dotfiles — not ours to re-copy (no-orphan policy), so it is a FAIL, not ok.
+F7N="$REVD/f7n"; mkdir -p "$F7N/home/.claude"
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash \"~/.claude/headroom-statusline.sh\"","refreshInterval":1}}' > "$F7N/settings.json"
+out=$(HOME="$F7N/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7N/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7N/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7n: tilde-spelled canonical wiring with missing script is fixable" "but the script is missing" "$out"
+check_absent "f7n: tilde-spelled missing wiring not trusted as ok"                "statusLine wired ("        "$out"
+HOME="$F7N/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7N/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7N/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+if cmp -s "$ROOT/scripts/statusline.sh" "$F7N/home/.claude/headroom-statusline.sh"; then
+  echo "ok - f7n: --fix re-copies the script the tilde wiring points at"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7n: --fix re-copies the script the tilde wiring points at"; FAIL=$((FAIL+1))
+fi
+F7NB="$REVD/f7n-b"; mkdir -p "$F7NB/cd"
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash \"/nonexistent-olduser/.claude/headroom-statusline.sh\"","refreshInterval":1}}' > "$F7NB/settings.json"
+out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7NB/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7NB/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check        "f7n: foreign-home wiring with missing script is a FAIL" "no such file exists" "$out"
+check_absent "f7n: foreign-home missing wiring not trusted as ok"     "statusLine wired ("  "$out"
+HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7NB/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7NB/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+if [ ! -f "$F7NB/cd/headroom-statusline.sh" ]; then
+  echo "ok - f7n: --fix drops no orphan for a foreign-home wiring"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7n: --fix drops no orphan for a foreign-home wiring"; FAIL=$((FAIL+1))
 fi
 
 # F8: execution semantics — Claude Code expands ${CLAUDE_PLUGIN_ROOT} in an MCP
