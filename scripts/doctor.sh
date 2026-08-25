@@ -12,6 +12,9 @@
 #                        merge-aware: an existing non-headroom command is kept
 #                        under _headroomStatusLineBackup and chained before the
 #                        badge (same semantics as the SKILL.md installer)
+#   * quoted mcp cmd   — strip literal quotes from the .mcp.json command
+#                        (.bak first); MCP commands are spawned without a
+#                        shell, so quotes break the launcher path
 #   * stale copies     — delete pre-plugin script copies in ~/.claude, but only
 #                        once plugin-native hooks are confirmed and no legacy
 #                        hook entries remain
@@ -207,10 +210,26 @@ elif ! jq -e '.mcpServers.headroom.command' "$MCP_DEF" >/dev/null 2>&1; then
   say FAIL ".mcp.json missing/invalid or lacks the headroom server ($MCP_DEF)"
 else
   mcp_cmd=$(jq -r '.mcpServers.headroom.command' "$MCP_DEF")
+  # Claude Code expands ${CLAUDE_PLUGIN_ROOT} and spawns the result directly
+  # (posix_spawn, no shell) — judge the string exactly as spawned; quotes are
+  # never unwrapped, they become part of the filename.
   mcp_path=${mcp_cmd//'${CLAUDE_PLUGIN_ROOT}'/$PLUGIN_ROOT}
-  mcp_path=${mcp_path//\"/}
   if [ -x "$mcp_path" ]; then
     say ok ".mcp.json registers the headroom MCP (launcher: $mcp_path)"
+  elif [ -x "${mcp_path//\"/}" ]; then
+    # the launcher exists but the command wraps it in literal quotes (shipped
+    # v2.5→v2.7.2): ENOENT at spawn → the /plugin ✗, server never connects
+    if [ "$FIX" -eq 1 ]; then
+      cp "$MCP_DEF" "$MCP_DEF.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+      if jq --arg c "${mcp_cmd//\"/}" '.mcpServers.headroom.command = $c' \
+          "$MCP_DEF" > "$TMPD/mcp.new" && cat "$TMPD/mcp.new" > "$MCP_DEF"; then
+        say fixed "unquoted the .mcp.json command — MCP commands are spawned without a shell (backup: .mcp.json.bak.*)"
+      else
+        say FAIL "could not rewrite $MCP_DEF to drop the literal quotes"
+      fi
+    else
+      say fixable ".mcp.json command carries literal quotes — spawned without a shell they break the launcher path, so the bundled MCP never connects (--fix unquotes it)"
+    fi
   else
     say FAIL ".mcp.json launcher missing or not executable ($mcp_path)"
   fi

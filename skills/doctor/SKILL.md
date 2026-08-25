@@ -13,7 +13,9 @@ headroom engine python (`$HCAT_PYTHON` → sibling of `headroom` on PATH → the
 pipx layouts → `~/.headroom-venv`), a real `bin/hcat` smoke compression of a
 generated ~26 KB JSON, the plugin-native `hooks/hooks.json` (SessionStart,
 PreToolUse, PostToolUse, Stop, SessionEnd), the bundled
-`.mcp.json` (parses and its launcher is executable), the bundled
+`.mcp.json` (parses and its launcher is executable **exactly as spawned** —
+MCP commands run without a shell, so a command carrying literal quotes is
+broken and `--fix` unquotes it in place), the bundled
 `data/model-prices.json` badge price table (parses; `--fix` copies it beside the
 statusline copy), that
 `~/.claude/settings.json` is a single valid JSON document, legacy pre-plugin
@@ -72,6 +74,10 @@ Each line is aligned `<status> - <what>`:
     (backup first); merge-aware: an existing non-headroom statusLine command
     is preserved under `_headroomStatusLineBackup` and chained ahead of the
     badge, never clobbered
+  - quoted `.mcp.json` command → literal quotes around `${CLAUDE_PLUGIN_ROOT}`
+    stripped in place (timestamped `.bak.*` first) — MCP stdio commands are
+    spawned without a shell, so the quotes 404 the launcher and the bundled
+    server never connects (the `/plugin` ✗)
   - stale statusline copy → refreshed from the plugin's `scripts/statusline.sh`
   - missing/stale statusline lib deps → `attribution.jq` and
     `headroom-state.sh` (re)installed into `~/.claude/lib/`; these are what the
