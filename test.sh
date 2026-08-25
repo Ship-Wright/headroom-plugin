@@ -1674,6 +1674,103 @@ check "f7x: the respelled token is rewritten to an absolute path" \
 check "f7x: an unrelated sibling token sharing the same prefix is left untouched" \
       'bash "~/.claude/headroom-statusline.sh.bak"' "$F7X_CMD"
 
+# F7y: a SINGLE-quoted respelled wiring (bash '~/...') is just as unexpandable
+# at spawn time as a double-quoted one (bash never expands a ~ inside EITHER
+# quote style), but the extraction loop treats both quote characters as
+# equally valid token delimiters -- so detection and the eventual rewrite
+# must track which one actually wraps the token, not assume double quotes.
+# Without this, the rewrite pattern silently fails to match, sl_new_cmd stays
+# byte-identical to sl, and doctor would falsely report "fixed" while writing
+# nothing -- violating the file's own "a second --fix run changes nothing"
+# idempotency claim (it would in fact never converge).
+F7Y="$REVD/f7y"; mkdir -p "$F7Y/home/.claude"
+cp "$ROOT/scripts/statusline.sh" "$F7Y/home/.claude/headroom-statusline.sh"   # already present
+printf "%s\n" '{"statusLine":{"type":"command","command":"bash '"'"'~/.claude/headroom-statusline.sh'"'"'","refreshInterval":1}}' > "$F7Y/settings.json"
+out=$(HOME="$F7Y/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7Y/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7Y/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check_absent "f7y: a single-quoted unexpandable wiring is not trusted ok just because the file exists" \
+             "statusLine wired (" "$out"
+HOME="$F7Y/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7Y/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7Y/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+F7Y_CMD=$(jq -r '.statusLine.command' "$F7Y/settings.json")
+check_absent "f7y: --fix actually changes the single-quoted command (not a silent no-op)" \
+             '~' "$F7Y_CMD"
+check "f7y: the single-quote style is preserved in the rewritten command" \
+      "bash '$F7Y/home/.claude/headroom-statusline.sh'" "$F7Y_CMD"
+if HOME="$F7Y/home" sh -c "$F7Y_CMD" < /dev/null >/dev/null 2>"$F7Y/run.err"; then
+  echo "ok - f7y: the rewired single-quoted command actually runs"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7y: the rewired single-quoted command actually runs"; FAIL=$((FAIL+1))
+  cat "$F7Y/run.err" >&2
+fi
+
+# F7z: an UNQUOTED bare tilde (bash ~/...) DOES tilde-expand correctly at
+# spawn time (quoting, not the tilde itself, is what blocks expansion) -- it
+# must not be misclassified as an unexpandable respelling and rewritten (or
+# flagged fixable) when it already works.
+F7Z="$REVD/f7z"; mkdir -p "$F7Z/home/.claude"
+cp "$ROOT/scripts/statusline.sh" "$F7Z/home/.claude/headroom-statusline.sh"
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash ~/.claude/headroom-statusline.sh","refreshInterval":1}}' > "$F7Z/settings.json"
+out=$(HOME="$F7Z/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7Z/settings.json" \
+      DOCTOR_CLAUDE_DIR="$F7Z/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" 2>&1)
+check "f7z: a genuinely-working unquoted tilde wiring is trusted ok, not misdiagnosed" \
+      "statusLine wired (" "$out"
+check_absent "f7z: an unquoted tilde wiring is not flagged as unexpandable" \
+             "can never resolve" "$out"
+F7Z2="$REVD/f7z2"; mkdir -p "$F7Z2/home/.claude"
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash ~/.claude/headroom-statusline.sh","refreshInterval":1}}' > "$F7Z2/settings.json"
+HOME="$F7Z2/home" HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7Z2/settings.json" \
+  DOCTOR_CLAUDE_DIR="$F7Z2/home/.claude" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix >/dev/null 2>&1
+check_eq "f7z: a missing unquoted-tilde wiring's file is copied without rewriting the (already-fine) command" \
+         "bash ~/.claude/headroom-statusline.sh" \
+         "$(jq -r '.statusLine.command' "$F7Z2/settings.json")"
+if cmp -s "$ROOT/scripts/statusline.sh" "$F7Z2/home/.claude/headroom-statusline.sh"; then
+  echo "ok - f7z: --fix still re-copies the missing script for an unquoted wiring"; PASS=$((PASS+1))
+else
+  echo "FAIL - f7z: --fix still re-copies the missing script for an unquoted wiring"; FAIL=$((FAIL+1))
+fi
+
+# F7aa: the PRIMARY settings.json's own legacy-hook removal must refuse to
+# proceed when its own backup fails -- the code path was fixed several
+# rounds ago (via backup_settings()) but never had a dedicated fixture; every
+# sibling call site (F7s, F7u, .mcp.json's F8c) has one, this one didn't.
+if [ "$(id -u)" -ne 0 ]; then
+  F7AA="$REVD/f7aa"; mkdir -p "$F7AA/cd" "$F7AA/settingsdir"
+  doc_settings_legacy "$F7AA/cd" > "$F7AA/settingsdir/settings.json"
+  chmod 666 "$F7AA/settingsdir/settings.json"
+  chmod 555 "$F7AA/settingsdir"
+  out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7AA/settingsdir/settings.json" \
+        DOCTOR_CLAUDE_DIR="$F7AA/cd" DOCTOR_VENV_DIR="$NOVENV" bash "$DOCTOR" --fix 2>&1)
+  chmod 755 "$F7AA/settingsdir"
+  check "f7aa: primary settings.json legacy-hook removal backup failure refuses the rewrite" \
+        "could not back up settings.json before rewriting it" "$out"
+  check "f7aa: legacy hook entries survive when the backup fails" \
+        "dangi-hook.sh" "$(cat "$F7AA/settingsdir/settings.json")"
+else
+  echo "skip - f7aa: primary settings.json backup-failure guard (running as root, permission bits bypassed)"
+fi
+
+# F7bb: the project-level settings scan's own backup (a THIRD, independent
+# call site from F7u's settings.local.json) must also refuse to proceed when
+# its backup fails.
+if [ "$(id -u)" -ne 0 ]; then
+  F7BB="$REVD/f7bb"; mkdir -p "$F7BB/cd" "$F7BB/settingsdir" "$F7BB/proj/.claude"
+  printf '{}\n' > "$F7BB/settingsdir/settings.json"
+  doc_settings_legacy "$F7BB/cd" > "$F7BB/proj/.claude/settings.json"
+  chmod 666 "$F7BB/proj/.claude/settings.json"
+  chmod 555 "$F7BB/proj/.claude"
+  out=$(HCAT_PYTHON="$FENG/python" PATH="$STUB:/usr/bin:/bin" DOCTOR_SETTINGS="$F7BB/settingsdir/settings.json" \
+        DOCTOR_CLAUDE_DIR="$F7BB/cd" DOCTOR_PROJECT_DIR="$F7BB/proj" DOCTOR_VENV_DIR="$NOVENV" \
+        bash "$DOCTOR" --fix 2>&1)
+  chmod 755 "$F7BB/proj/.claude"
+  check "f7bb: project-level settings legacy-hook removal backup failure refuses the rewrite" \
+        "could not back up $F7BB/proj/.claude/settings.json before rewriting it" "$out"
+  check "f7bb: project-level legacy hook entries survive when the backup fails" \
+        "dangi-hook.sh" "$(cat "$F7BB/proj/.claude/settings.json")"
+else
+  echo "skip - f7bb: project-level settings backup-failure guard (running as root, permission bits bypassed)"
+fi
+
 # F8: execution semantics — Claude Code expands ${CLAUDE_PLUGIN_ROOT} in an MCP
 # stdio command and then spawns the result DIRECTLY (posix_spawn, no shell), so
 # literal quotes become part of the filename → ENOENT, the /plugin ✗, and the

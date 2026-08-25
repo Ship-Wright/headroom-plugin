@@ -406,7 +406,7 @@ else
     # candidate; anything else falls through to the no-extractable-token
     # trust rule below, same as before.
     sl_present=0; sl_seen=0; sl_canonical_missing=0; sl_respelled_raw=""
-    sl_custom_missing=""; sl_wired_path=""
+    sl_respelled_delim=""; sl_custom_missing=""; sl_wired_path=""
     while IFS= read -r sl_tok; do
       [ -n "$sl_tok" ] || continue
       # shellcheck disable=SC2088 # matching a LITERAL ~ the shell never expanded — this just structurally validates the token shape
@@ -420,11 +420,21 @@ else
       # shellcheck disable=SC2088 # matching a LITERAL ~ the shell never expanded — we expand it here
       case $sl_cand in "~/"*) sl_cand="$HOME/${sl_cand#"~/"}" ;; esac
       if [ "$sl_cand" = "$CLAUDE_DIR/headroom-statusline.sh" ] && [ "$sl_raw" != "$CLAUDE_DIR/headroom-statusline.sh" ]; then
-        # names the canonical file only via a respelling bash never expands at
-        # spawn time (a quoted ~) — the wiring can never resolve at runtime
-        # regardless of whether the file happens to already exist, so this
-        # must gate BOTH outcomes below, not just the canonical-missing one
-        sl_respelled_raw=$sl_raw
+        # names the canonical file only via a ~ respelling. Whether that
+        # actually resolves at spawn time depends on how the shell sees it:
+        # bash expands an UNQUOTED ~, but never one inside single OR double
+        # quotes. The [^"' ]+ extraction above already treats both quote
+        # characters as equally valid delimiters, so detection must too —
+        # check which one (if either) actually wraps this exact token in the
+        # raw command, and remember it so the eventual rewrite anchors on the
+        # SAME delimiter it detected, not an assumed one.
+        sl_sq="'"
+        # shellcheck disable=SC2027 # $sl_raw is deliberately unquoted here -- it's a case-pattern glob segment, not a quoting typo
+        case $sl in
+          *\"$sl_raw\"*) sl_respelled_raw=$sl_raw; sl_respelled_delim='"' ;;
+          *"$sl_sq"$sl_raw"$sl_sq"*) sl_respelled_raw=$sl_raw; sl_respelled_delim=$sl_sq ;;
+          *) : ;;  # unquoted -- bash expands this fine at spawn time, nothing to rewrite
+        esac
       fi
       if [ -f "$sl_cand" ]; then sl_present=1; sl_wired_path=$sl_cand
       elif [ "$sl_cand" = "$CLAUDE_DIR/headroom-statusline.sh" ]; then sl_canonical_missing=1
@@ -468,12 +478,18 @@ else
         elif ! backup_settings; then
           say FAIL "could not back up settings.json before rewriting the '$sl_respelled_raw' wiring — refusing to overwrite without one"
         else
-          # Anchor the replace on the closing quote every doctor-generated and
-          # documented hand-wiring uses (bash "<path>") so a global substring
-          # replace can't also mangle an unrelated sibling token that merely
-          # shares this one's prefix (e.g. a coexisting ...headroom-statusline.sh.bak).
-          sl_new_cmd=${sl//$sl_respelled_raw\"/$CLAUDE_DIR/headroom-statusline.sh\"}
-          if jq --arg c "$sl_new_cmd" '.statusLine.command = $c' \
+          # Anchor the replace on the SAME closing quote character detection
+          # found wrapping this token (' or ") -- a global substring replace
+          # with the wrong (or no) anchor can't also mangle an unrelated
+          # sibling token that merely shares this one's prefix (e.g. a
+          # coexisting ...headroom-statusline.sh.bak).
+          sl_new_cmd=${sl//$sl_respelled_raw$sl_respelled_delim/$CLAUDE_DIR/headroom-statusline.sh$sl_respelled_delim}
+          if [ "$sl_new_cmd" = "$sl" ]; then
+            # the replace found nothing to change -- never claim "fixed" for a
+            # rewrite that silently did nothing, which would violate the
+            # idempotent contract and mask the wiring staying broken
+            say FAIL "could not identify how '$sl_respelled_raw' is quoted in the statusLine command — refusing to rewrite it blindly"
+          elif jq --arg c "$sl_new_cmd" '.statusLine.command = $c' \
               "$SETTINGS" > "$TMPD/settings.sl2" && cat "$TMPD/settings.sl2" > "$SETTINGS"; then
             if [ "$sl_canonical_missing" -eq 1 ]; then
               say fixed "re-copied the missing statusline script to $CLAUDE_DIR/headroom-statusline.sh and rewrote the unexpandable '$sl_respelled_raw' wiring to an absolute path (settings.json backup: .bak.*)"
@@ -487,7 +503,7 @@ else
       elif [ "$sl_canonical_missing" -eq 1 ]; then
         say fixable "statusLine points at $CLAUDE_DIR/headroom-statusline.sh but the script is missing — --fix re-copies it"
       else
-        say fixable "statusLine wiring '$sl_respelled_raw' can never resolve (bash never expands a quoted ~ inside a double-quoted command) even though $CLAUDE_DIR/headroom-statusline.sh already exists — --fix rewrites it to an absolute path"
+        say fixable "statusLine wiring '$sl_respelled_raw' can never resolve (bash never expands a ~ inside quotes) even though $CLAUDE_DIR/headroom-statusline.sh already exists — --fix rewrites it to an absolute path"
       fi
     else
       say FAIL "statusLine points at $sl_custom_missing but no such file exists — restore it or re-wire settings.json (--fix will not guess a custom location)"
@@ -532,11 +548,13 @@ JQEOF
         && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
       # statusline.sh resolves attribution.jq + headroom-state.sh from a lib/ dir
       # next to itself; without them compute() degrades to a permanent idle badge
-      # showing zero savings (issue #2). Provision them alongside the copy.
+      # showing zero savings (issue #2). Provision them alongside the copy, and
+      # gate the "fixed" claim on them actually landing -- a silently-failed
+      # lib-dep copy must not be reported as a successful wire.
       mkdir -p "$CLAUDE_DIR/lib"
-      cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
-      cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" 2>/dev/null || true
-      if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_path" && chmod +x "$sl_path" \
+      if cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" \
+         && cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" \
+         && cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_path" && chmod +x "$sl_path" \
          && jq --arg hr "bash \"$sl_path\"" "$sl_merge_jq" \
             "$SETTINGS" > "$TMPD/settings.sl" && cat "$TMPD/settings.sl" > "$SETTINGS"; then
         if [ -n "$sl" ] && ! printf '%s' "$sl" | grep -q "mcp__headroom__headroom_compress"; then
@@ -545,7 +563,7 @@ JQEOF
           say fixed "statusLine wired to $sl_disp (script copied, backup: settings.json.bak.*)"
         fi
       else
-        say FAIL "could not copy statusline.sh to $sl_path and wire settings.json"
+        say FAIL "could not copy statusline.sh (+ lib deps) to $sl_path and wire settings.json"
       fi
     fi
   elif [ -n "$sl" ]; then
@@ -576,12 +594,12 @@ JQEOF
     [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
       && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
     mkdir -p "$CLAUDE_DIR/lib"
-    cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
-    cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" 2>/dev/null || true
-    if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_copy" && chmod +x "$sl_copy"; then
+    if cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" \
+       && cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" \
+       && cp "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_copy" && chmod +x "$sl_copy"; then
       say fixed "statusline copy refreshed from the plugin ($sl_copy)"
     else
-      say FAIL "could not refresh $sl_copy from the plugin"
+      say FAIL "could not refresh $sl_copy (+ lib deps) from the plugin"
     fi
   else
     say fixable "statusline copy differs from the plugin's scripts/statusline.sh — --fix refreshes it"
