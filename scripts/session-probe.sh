@@ -37,7 +37,7 @@ HCAT="$here/../bin/hcat"
 [ -x "$HCAT" ] || HCAT="$here/hcat"
 if [ ! -x "$HCAT" ]; then
   note_error install "hcat missing or not executable"
-  add_problem "hcat is missing or not executable — reinstall the plugin or run /doctor"
+  add_problem "hcat is missing or not executable — reinstall the plugin or run /headroom-usage-indicator:doctor"
 fi
 
 # --- 2b. shared libs — the badge/ledger read attribution.jq; the hooks source
@@ -67,7 +67,7 @@ else
   if [ -z "$py" ]; then
     # Never-installed engine is the ordinary red-idle state, not a breakage:
     # say it once at session start, but do not flip the badge to broken.
-    add_problem "headroom engine not installed — run /doctor --fix to bootstrap it"
+    add_problem "headroom engine not installed — run /headroom-usage-indicator:doctor --fix to bootstrap it"
   fi
 fi
 
@@ -86,7 +86,7 @@ if [ -z "$problems" ] && [ -f "$STATE_DIR/last-error" ]; then
   case "${le_ts:-}" in (*[!0-9]*|"") le_ts=0 ;; esac
   le_age=$(( $(date +%s) - le_ts ))
   if [ "$le_age" -ge 0 ] 2>/dev/null && [ "$le_age" -le 86400 ] 2>/dev/null; then
-    add_problem "a recent failure was recorded: ${le_msg:-see last-error} — run /doctor (doctor clears this once healthy)"
+    add_problem "a recent failure was recorded: ${le_msg:-see last-error} — run /headroom-usage-indicator:doctor (doctor clears this once healthy)"
   fi
 fi
 
