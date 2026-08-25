@@ -29,7 +29,7 @@ v2.3 adds the **prevention layer**: `hcat` compresses structured files *at the s
 
 ## Prerequisites
 
-- The headroom MCP server is available (tools appear as `mcp__headroom__headroom_compress`, `…_retrieve`, `…_stats`). Plugin installs bundle the registration via `.mcp.json`; the engine itself, if missing, can be bootstrapped into `~/.headroom-venv` by the `doctor` skill. Legacy installs must register it by hand.
+- The headroom MCP server is available (tools appear as `mcp__headroom__headroom_compress`, `…_retrieve`, `…_stats`). Plugin installs bundle the registration via `.mcp.json`; the engine itself, if missing, can be bootstrapped into `~/.headroom-venv` by the `doctor` skill. Legacy installs must register it by hand. **v2.7.3:** the bundled registration was broken from v2.5 through v2.7.2 — its command carried literal quotes, and MCP `stdio` commands are spawned without a shell, so the launcher was never found (`/plugin` showed a ✗). If those tools are missing on a plugin install, that is the likely cause; `doctor --fix` repairs an installed copy in place.
 - `jq` on PATH.
 
 ## How It Works
