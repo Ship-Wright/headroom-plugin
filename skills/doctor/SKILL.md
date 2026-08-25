@@ -24,11 +24,13 @@ hook entries still registered in `~/.claude/settings.json`,
 `.claude/settings.json` / `.claude/settings.local.json` (override the project
 directory with `DOCTOR_PROJECT_DIR`, default the current working directory) —
 they all double-fire alongside the plugin-native hooks — the statusLine
-wiring, that the `~/.claude/headroom-statusline.sh` copy matches the plugin's
-script **and that its `~/.claude/lib/` runtime deps (`attribution.jq`,
-`headroom-state.sh`) are present and current** (without them the badge is
-stuck at a permanent "idle" showing zero savings), stale pre-plugin script
-copies in `~/.claude`, and whether a recorded
+wiring (including a doctor-blessed custom, hand-wired path, not just the
+canonical `~/.claude/headroom-statusline.sh` copy), that the wired copy
+matches the plugin's script **and that its runtime deps (`attribution.jq`,
+`headroom-state.sh`) are present and current** — under `~/.claude/lib/`, or,
+for the legacy full-manual install layout, as flat siblings next to the copy
+(without them the badge is stuck at a permanent "idle" showing zero savings),
+stale pre-plugin script copies in `~/.claude`, and whether a recorded
 ambient-health failure (the `last-error` file that flips the statusline badge
 to "broken") can now be cleared.
 
@@ -76,10 +78,17 @@ Each line is aligned `<status> - <what>`:
     badge, never clobbered
   - statusLine wired but script missing → `scripts/statusline.sh` re-copied to
     `~/.claude/headroom-statusline.sh` (settings already point at it, in any
-    spelling — absolute or tilde), with its `lib/` deps and the price table
-    re-provisioned; the same wiring pointed at a hand-edited custom path whose
-    script is gone is reported `FAIL` instead — the doctor will not guess
-    where to place a copy
+    spelling — absolute or tilde), with its `lib/` deps re-provisioned (the
+    price table too, best-effort); if the wiring named the canonical file by a
+    respelling bash can never expand at render time (a quoted `~`),
+    `settings.json`'s `statusLine.command` is also rewritten to the absolute
+    path (its own timestamped backup first) — otherwise the file would exist
+    but the wired command would still never find it; the same wiring pointed
+    at a hand-edited custom path whose script is gone is reported `FAIL`
+    instead — the doctor will not guess where to place a copy; a custom path
+    whose script IS present but whose `lib/` deps are missing or stale is also
+    `FAIL`, not `fixable` — the doctor detects a custom install's health but
+    never writes into it
   - quoted `.mcp.json` command → literal quotes around `${CLAUDE_PLUGIN_ROOT}`
     stripped in place (timestamped `.bak.*` first) — MCP stdio commands are
     spawned without a shell, so the quotes 404 the launcher and the bundled
@@ -107,10 +116,13 @@ Never run `--fix` unprompted. If anything is `fixable`, list exactly what
 `.claude/settings.json` / `.claude/settings.local.json`, each with its own
 timestamped backup; may create a venv and run pip; may delete stale script
 copies; may rewrite the plugin's bundled `.mcp.json` in place to unquote its
-command, with its own timestamped backup; and may re-copy the statusline
-script plus its `lib/` deps and price table to `~/.claude` when settings
-already point at a missing canonical copy) and ask the user for consent.
-Only after they agree:
+command, with its own timestamped backup; may re-copy the statusline script
+plus its `lib/` deps and price table to `~/.claude` when settings already
+point at a missing canonical copy, and — only when that copy's wiring named
+it by a respelling bash can never expand — rewrite `statusLine.command` to
+the absolute path in the same settings.json backup; never writes into a
+doctor-detected custom-path install, only reports its health) and ask the
+user for consent. Only after they agree:
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.sh" --fix

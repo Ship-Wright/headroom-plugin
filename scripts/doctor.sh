@@ -14,7 +14,10 @@
 #                        badge (same semantics as the SKILL.md installer)
 #   * wired-missing copy — re-copy statusline.sh (+ lib deps, price table) to
 #                        ~/.claude when settings already point at the canonical
-#                        path but the script is absent
+#                        path but the script is absent; if the wiring named it
+#                        by a respelling bash can never expand (a quoted ~),
+#                        also rewrites statusLine.command to the absolute path
+#                        (.bak first)
 #   * quoted mcp cmd   — strip literal quotes from the .mcp.json command
 #                        (.bak first); MCP commands are spawned without a
 #                        shell, so quotes break the launcher path
@@ -223,8 +226,12 @@ else
     # the launcher exists but the command wraps it in literal quotes (shipped
     # v2.5→v2.7.2): ENOENT at spawn → the /plugin ✗, server never connects
     if [ "$FIX" -eq 1 ]; then
-      cp "$MCP_DEF" "$MCP_DEF.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
-      if jq --arg c "${mcp_cmd//\"/}" '.mcpServers.headroom.command = $c' \
+      # the backup must actually land before we overwrite the only copy on
+      # disk — a swallowed backup failure followed by a rewrite would claim
+      # "(backup: ...)" while leaving no recovery copy at all
+      if ! cp "$MCP_DEF" "$MCP_DEF.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null; then
+        say FAIL "could not back up $MCP_DEF before rewriting it — refusing to overwrite without one"
+      elif jq --arg c "${mcp_cmd//\"/}" '.mcpServers.headroom.command = $c' \
           "$MCP_DEF" > "$TMPD/mcp.new" && cat "$TMPD/mcp.new" > "$MCP_DEF"; then
         say fixed "unquoted the .mcp.json command — MCP commands are spawned without a shell (backup: .mcp.json.bak.*)"
       else
@@ -378,31 +385,68 @@ else
     # doctor won't guess where to place a copy (no-orphan policy), and a
     # fixable that --fix cannot repair would break the fixable contract. A
     # command with no extractable path token is trusted as wired.
-    sl_present=0; sl_seen=0; sl_canonical_missing=0; sl_custom_missing=""
-    while IFS= read -r sl_cand; do
-      [ -n "$sl_cand" ] || continue
+    # Candidate tokens are whole quote/space-delimited words, not a substring
+    # regex match: a substring match has no token boundary, so it silently
+    # truncates a suffixed filename (headroom-statusline.sh.bak -> verifies
+    # the wrong, unsuffixed file) and can start mid-token on a false match
+    # (matching the '/' inside "$HOME/..." instead of the token's real start).
+    # Each token is then structurally validated (starts with ~/ or /, ends
+    # exactly at "headroom-statusline.sh") before being trusted as a real
+    # candidate; anything else falls through to the no-extractable-token
+    # trust rule below, same as before.
+    sl_present=0; sl_seen=0; sl_canonical_missing=0; sl_canonical_raw=""
+    sl_custom_missing=""; sl_wired_path=""
+    while IFS= read -r sl_tok; do
+      [ -n "$sl_tok" ] || continue
+      # shellcheck disable=SC2088 # matching a LITERAL ~ the shell never expanded — this just structurally validates the token shape
+      case $sl_tok in
+        "~/"*headroom-statusline.sh | /*headroom-statusline.sh) ;;
+        *) continue ;;
+      esac
+      sl_cand=$sl_tok
       sl_seen=1
+      sl_raw=$sl_cand
       # shellcheck disable=SC2088 # matching a LITERAL ~ the shell never expanded — we expand it here
       case $sl_cand in "~/"*) sl_cand="$HOME/${sl_cand#"~/"}" ;; esac
-      if [ -f "$sl_cand" ]; then sl_present=1
-      elif [ "$sl_cand" = "$CLAUDE_DIR/headroom-statusline.sh" ]; then sl_canonical_missing=1
+      if [ -f "$sl_cand" ]; then sl_present=1; sl_wired_path=$sl_cand
+      elif [ "$sl_cand" = "$CLAUDE_DIR/headroom-statusline.sh" ]; then
+        sl_canonical_missing=1; sl_canonical_raw=$sl_raw
       else sl_custom_missing=$sl_cand
       fi
-    done < <(printf '%s\n' "$sl" | grep -oE "(~|/)[^\"' ]*headroom-statusline\.sh")
+    done < <(printf '%s\n' "$sl" | grep -oE "[^\"' ]+")
     if [ "$sl_present" -eq 1 ] || [ "$sl_seen" -eq 0 ]; then
       say ok "statusLine wired ($sl)"
     elif [ "$sl_canonical_missing" -eq 1 ]; then
       if [ "$FIX" -eq 1 ]; then
         mkdir -p "$CLAUDE_DIR/lib"
-        cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
-        cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" 2>/dev/null || true
+        # model-prices.json degrades gracefully when absent (statusline.sh
+        # falls back to a built-in table), so it stays best-effort; the two
+        # deps below are load-bearing for a working badge and must gate the
+        # "fixed" claim, same as the sibling fix in 7c just below
         [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
           && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
-        if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$CLAUDE_DIR/headroom-statusline.sh" \
+        if cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" \
+           && cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" \
+           && cp "$PLUGIN_ROOT/scripts/statusline.sh" "$CLAUDE_DIR/headroom-statusline.sh" \
            && chmod +x "$CLAUDE_DIR/headroom-statusline.sh"; then
-          say fixed "re-copied the missing statusline script to $CLAUDE_DIR/headroom-statusline.sh (settings already pointed at it)"
+          if [ "$sl_canonical_raw" != "$CLAUDE_DIR/headroom-statusline.sh" ]; then
+            # matched via a respelling (a quoted ~) that bash never expands at
+            # spawn time — no shell unwraps a tilde inside double quotes, so
+            # the file now exists but the wired command would still fail to
+            # find it. Rewrite the command to the literal resolved path.
+            backup_settings
+            sl_new_cmd=${sl//$sl_canonical_raw/$CLAUDE_DIR/headroom-statusline.sh}
+            if jq --arg c "$sl_new_cmd" '.statusLine.command = $c' \
+                "$SETTINGS" > "$TMPD/settings.sl2" && cat "$TMPD/settings.sl2" > "$SETTINGS"; then
+              say fixed "re-copied the missing statusline script to $CLAUDE_DIR/headroom-statusline.sh and rewrote the unexpandable '$sl_canonical_raw' wiring to an absolute path (settings.json backup: .bak.*)"
+            else
+              say FAIL "re-copied statusline.sh but could not rewrite the '$sl_canonical_raw' wiring in settings.json"
+            fi
+          else
+            say fixed "re-copied the missing statusline script to $CLAUDE_DIR/headroom-statusline.sh (settings already pointed at it)"
+          fi
         else
-          say FAIL "could not re-copy statusline.sh to $CLAUDE_DIR/headroom-statusline.sh"
+          say FAIL "could not re-copy statusline.sh and its lib deps to $CLAUDE_DIR"
         fi
       else
         say fixable "statusLine points at $CLAUDE_DIR/headroom-statusline.sh but the script is missing — --fix re-copies it"
@@ -465,12 +509,24 @@ JQEOF
     say fixable "statusLine not wired — --fix copies the script to $CLAUDE_DIR and points settings.json at it"
   fi
 
-  # 7b. the wired copy must match the plugin's statusline.sh (upgrade path)
-  sl_copy="$CLAUDE_DIR/headroom-statusline.sh"
+  # 7b. the wired copy must match the plugin's statusline.sh (upgrade path).
+  # sl_copy follows whatever check 7 actually validated as wired — including
+  # a doctor-blessed custom path — instead of always assuming the canonical
+  # location. Previously 7b/7c only ever looked at $CLAUDE_DIR, so a custom
+  # install's stale/missing script or deps went undetected forever (`skip`,
+  # not FAILED/FIXABLE) and block 9's all-clear cleared any recorded failure
+  # regardless — issue #2's original symptom, for the custom-path population.
+  sl_copy=${sl_wired_path:-"$CLAUDE_DIR/headroom-statusline.sh"}
+  sl_custom_copy=0
+  [ "$sl_copy" != "$CLAUDE_DIR/headroom-statusline.sh" ] && sl_custom_copy=1
   if [ ! -f "$sl_copy" ]; then
     say skip "statusline copy refresh (no $sl_copy yet)"
   elif cmp -s "$PLUGIN_ROOT/scripts/statusline.sh" "$sl_copy"; then
     say ok "statusline copy is current ($sl_copy)"
+  elif [ "$sl_custom_copy" -eq 1 ]; then
+    # no-orphan policy (matches check 7): a custom path is the user's own to
+    # own, so doctor detects but never overwrites it
+    say FAIL "statusline copy at $sl_copy is stale — a custom-path install is yours to update (doctor will not overwrite it)"
   elif [ "$FIX" -eq 1 ]; then
     [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
       && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
@@ -497,16 +553,18 @@ JQEOF
   if [ ! -f "$sl_copy" ]; then
     say skip "statusline lib deps (no $sl_copy yet)"
   else
+    sl_dep_dir=$(dirname "$sl_copy")
     lib_stale=""
     for f in attribution.jq headroom-state.sh; do
       # Resolve each dep exactly as statusline.sh does — by EXISTENCE, lib/ first,
-      # else the flat sibling — then currency-check only the file it would load.
+      # else the flat sibling next to the copy actually wired (canonical or
+      # custom-path), then currency-check only the file it would load.
       # A plain "lib matches OR flat matches" would green a stale lib/ copy that
       # shadows a current flat sibling: statusline.sh sources the stale lib/ one
       # (it takes lib/ the moment the file exists, content-blind) and never falls
       # through, so the badge would silently run on the stale dep.
-      if   [ -f "$CLAUDE_DIR/lib/$f" ]; then dep="$CLAUDE_DIR/lib/$f"
-      elif [ -f "$CLAUDE_DIR/$f" ];     then dep="$CLAUDE_DIR/$f"
+      if   [ -f "$sl_dep_dir/lib/$f" ]; then dep="$sl_dep_dir/lib/$f"
+      elif [ -f "$sl_dep_dir/$f" ];     then dep="$sl_dep_dir/$f"
       else dep=""; fi
       if [ -n "$dep" ] && cmp -s "$PLUGIN_ROOT/scripts/lib/$f" "$dep"; then
         :   # the exact file statusline.sh loads is present and current
@@ -516,6 +574,8 @@ JQEOF
     done
     if [ -z "$lib_stale" ]; then
       say ok "statusline lib deps current (attribution.jq, headroom-state.sh)"
+    elif [ "$sl_custom_copy" -eq 1 ]; then
+      say FAIL "statusline lib deps at $sl_dep_dir missing/stale —$lib_stale (custom-path install is yours to update; doctor will not write there)"
     elif [ "$FIX" -eq 1 ]; then
       mkdir -p "$CLAUDE_DIR/lib"
       if cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" \
