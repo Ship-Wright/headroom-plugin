@@ -961,22 +961,61 @@ check        "rewrite: its savings are counted"          "600" "$out"
 check        "rewrite: counted once"                     "1×"  "$out"
 check_absent "rewrite: not scored as an uncompressed blob" "uncompressed" "$out"
 
-# Negative 1: an attachment that did NOT rewrite to hcat must not launder a
-# quoted receipt into a genuine compression.
-rewritten_event gw2 "cat /tmp/x.json" "cat /tmp/x.json" > "$TMP/t_norewrite.jsonl"
-out=$(badge "$TMP/t_norewrite.jsonl" claude-opus-4-8 sess-gw2)
-check_absent "rewrite: unrewritten cat still not attributed" "●"   "$out"
-check_absent "rewrite: unrewritten cat banks no savings"     "600" "$out"
+# --- negatives: each poison is paired with a GENUINE compression in the same
+# transcript, and we assert the genuine one still renders (1× / 600) while the
+# poison adds nothing (never 2× / 1200). The pairing is the point: a bare
+# check_absent on a poison-only transcript passes vacuously whenever the jq
+# pass ABORTS and nothing renders at all — which is exactly how a non-string
+# `updatedInput.command` (jq test() throws on non-strings, killing the whole
+# program) slipped past the first version of these tests.
+poison_event() {  # poison_event <id> <attachment-json-line>
+  jq -cn --arg id "$1" --arg now "$NOW" \
+    '{timestamp:$now,message:{content:[{type:"tool_use",id:$id,name:"Bash",input:{command:"cat /tmp/x.json"}}]}}'
+  printf '%s\n' "$2"
+  jq -cn --arg id "$1" \
+    '{message:{content:[{type:"tool_result",tool_use_id:$id,content:[{type:"text",
+      text:"── hcat: /tmp/x.json · 10 lines · 5.0 KB · ~1000 tok → ~400 tok (60.0% saved) · original on disk"}]}]}}'
+}
+gate_att() {  # gate_att <toolUseID> <attachment-type> <hookEvent> <command-json>
+  jq -cn --arg id "$1" --arg at "$2" --arg ev "$3" --argjson cmd "$4" \
+    '{type:"attachment",attachment:{type:$at,hookName:("PreToolUse:Bash"),hookEvent:$ev,
+      toolUseID:$id,stderr:"",exitCode:0,
+      stdout:({hookSpecificOutput:{hookEventName:$ev,permissionDecision:"allow",updatedInput:{command:$cmd}}}|tojson)}}'
+}
+neg_case() {  # neg_case <label> <session> <poison-id> <attachment-json>
+  { hcat_event keep 1000 400; poison_event "$3" "$4"; } > "$TMP/t_neg_$3.jsonl"
+  local o; o=$(badge "$TMP/t_neg_$3.jsonl" claude-opus-4-8 "$2")
+  check        "rewrite/neg: $1 — genuine compression still counted" "600" "$o"
+  check        "rewrite/neg: $1 — exactly one compression"           "1×"  "$o"
+  check_absent "rewrite/neg: $1 — poison not counted"                "2×"  "$o"
+}
 
-# Negative 2: a hook whose output merely MENTIONS hcat in prose (no
-# updatedInput) must not count — the check reads the announced command, not text.
-jq -cn --arg now "$NOW" '{timestamp:$now,message:{content:[{type:"tool_use",id:"gw3",name:"Bash",input:{command:"cat /tmp/x.json"}}]}}' > "$TMP/t_prose.jsonl"
-jq -cn '{type:"attachment",attachment:{type:"hook_success",hookName:"PreToolUse:Bash",hookEvent:"PreToolUse",toolUseID:"gw3",stderr:"",exitCode:0,
-  stdout:({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",permissionDecisionReason:"run hcat \"/tmp/x.json\" instead"}}|tojson)}}' >> "$TMP/t_prose.jsonl"
-jq -cn '{message:{content:[{type:"tool_result",tool_use_id:"gw3",content:[{type:"text",text:"── hcat: /tmp/x.json · 10 lines · 5.0 KB · ~1000 tok → ~400 tok (60.0% saved) · original on disk"}]}]}}' >> "$TMP/t_prose.jsonl"
-out=$(badge "$TMP/t_prose.jsonl" claude-opus-4-8 sess-gw3)
-check_absent "rewrite: hcat named only in hook prose is not attributed" "●"   "$out"
-check_absent "rewrite: hook prose banks no savings"                     "600" "$out"
+# Negative 1: an attachment that did NOT rewrite to hcat.
+neg_case "unrewritten cat" sess-gw2 gw2 "$(gate_att gw2 hook_success PreToolUse '"cat /tmp/x.json"')"
+
+# Negative 2: hcat named only in hook PROSE, with no updatedInput at all.
+neg_case "hcat only in hook prose" sess-gw3 gw3 "$(jq -cn '{type:"attachment",attachment:{type:"hook_success",hookName:"PreToolUse:Bash",hookEvent:"PreToolUse",toolUseID:"gw3",stderr:"",exitCode:0,
+  stdout:({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",permissionDecisionReason:"run hcat \"/tmp/x.json\" instead"}}|tojson)}}')"
+
+# Negative 3: right shape, wrong hookEvent — pins the PreToolUse filter.
+neg_case "PostToolUse attachment" sess-gw4 gw4 "$(gate_att gw4 hook_success PostToolUse '"hcat \"/tmp/x.json\""')"
+
+# Negative 4: right shape, wrong attachment type — pins the hook_success filter.
+neg_case "hook_error attachment" sess-gw5 gw5 "$(gate_att gw5 hook_error PreToolUse '"hcat \"/tmp/x.json\""')"
+
+# Negative 5: a genuine-looking rewrite with NO toolUseID — pins the `// empty`
+# guard, without which an id-less entry keys the set on "" and can launder any
+# tool_result that also lacks a tool_use_id.
+neg_case "attachment without toolUseID" sess-gw6 gw6 "$(jq -cn '{type:"attachment",attachment:{type:"hook_success",hookName:"PreToolUse:Bash",hookEvent:"PreToolUse",stderr:"",exitCode:0,
+  stdout:({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",updatedInput:{command:"hcat \"/tmp/x.json\""}}}|tojson)}}')"
+
+# Negative 6: a NON-STRING updatedInput.command from any PreToolUse hook.
+# jq's test() throws on non-strings and an uncaught throw aborts the whole
+# program, so before the type guard this rendered NOTHING — the badge went
+# blank and the ledger dropped the session. The genuine assertions below are
+# what actually catch that; a bare check_absent would have passed.
+neg_case "non-string command (number)" sess-gw7 gw7 "$(gate_att gw7 hook_success PreToolUse '42')"
+neg_case "non-string command (array)"  sess-gw8 gw8 "$(gate_att gw8 hook_success PreToolUse '["ls","-la"]')"
 
 # dangi, same attack: quoting a receipt in a grep is still a missed opportunity...
 out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"rev-d1",

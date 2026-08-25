@@ -22,9 +22,16 @@ def is_receipt: test("(^|\\n)── hcat: ");
 # tolerates the whole-command quoted form ("hcat" "file", "/abs/hcat" "file")
 # that pre-F1 v2.7 gate rewrites emitted into older transcripts — anchored to
 # the command start so a `grep "hcat" docs` never counts.
+# The leading type coercion is load-bearing, not defensive noise: jq's test()
+# THROWS on a non-string input, and an uncaught throw aborts the whole program
+# — which here means the badge silently renders empty and the ledger drops the
+# session, for the rest of that session. The inputs are third-party (any
+# PreToolUse hook's announced command, any recorded tool_input.command), so a
+# non-string is a `{"command": 42}` away. Coerce to "" and simply not match.
 def is_hcat_cmd:
-  test("(^|\\n|[|;&]\\s*|[$][(]\\s*|/)hcat(\\s|$)")
-  or test("(^|\\n)\"([^\"]*/)?hcat\"(\\s|$)");
+  (if type == "string" then . else "" end)
+  | test("(^|\\n|[|;&]\\s*|[$][(]\\s*|/)hcat(\\s|$)")
+    or test("(^|\\n)\"([^\"]*/)?hcat\"(\\s|$)");
 
 # O(1) membership set from a list of tool_use ids (index() rescans are
 # quadratic over big transcripts — see ledger-hook).
@@ -50,15 +57,23 @@ def headroom_ids($pfx): [tool_uses[] | select((.name // "")|startswith($pfx)) | 
 # so this stays a structural check: a hook whose output merely MENTIONS hcat,
 # or any prose quoting a rewrite, can never qualify.
 def gate_rewritten_ids:
-  [ .[] | select((.type? // "") == "attachment")
+  # The command-based half of hcat_bash_ids is implicitly Bash-only (it reads
+  # a Bash tool_use's .input.command). Keep that invariant here rather than
+  # trusting any hook on any tool: only a Bash tool_use can be an hcat run.
+  idset([tool_uses[] | select((.name // "") == "Bash") | .id]) as $bash
+  | [ .[] | select((.type? // "") == "attachment")
         | .attachment? // empty
         | select((.type? // "") == "hook_success")
         | select((.hookEvent? // "") == "PreToolUse")
         | . as $a
+        # Bound the parse: this runs on every status-line render, and stdout
+        # belongs to whatever hook produced it. The gate's own output is ~1 KB.
+        | select((($a.stdout? // "") | length) < 65536)
         | (($a.stdout? // "") | try fromjson catch null) as $o
         | select($o != null)
         | select(((($o.hookSpecificOutput? // {}).updatedInput? // {}).command? // "") | is_hcat_cmd)
-        | ($a.toolUseID? // empty) ];
+        | ($a.toolUseID? // empty)
+        | select($bash[.] // false) ];
 
 # Both shapes of a genuine hcat run: the model invoking hcat itself, and the
 # gate rewriting a `cat` into one on its behalf.
