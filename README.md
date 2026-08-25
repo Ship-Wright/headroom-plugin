@@ -137,7 +137,7 @@ For the curious — after the Quickstart, here is where everything lives:
 | `hcat` | `bin/hcat` inside the plugin | on Claude's Bash PATH automatically |
 | headroom MCP registration | `.mcp.json` inside the plugin | bundled; the launcher finds your engine |
 | headroom engine (Python) | `~/.headroom-venv` (or your own install) | the doctor bootstraps it with your consent |
-| status line | `statusLine` in `~/.claude/settings.json`, pointing at a copy of `scripts/statusline.sh` at `~/.claude/headroom-statusline.sh` | **the one manual step** — the doctor writes it for you (merge-aware: an existing custom status line is kept and backed up under `_headroomStatusLineBackup`) |
+| status line | `statusLine` in `~/.claude/settings.json`, pointing at a copy of `scripts/statusline.sh` at `~/.claude/headroom-statusline.sh` (with its `attribution.jq` + `headroom-state.sh` deps in `~/.claude/lib/`) | **the one manual step** — the doctor writes it for you (merge-aware: an existing custom status line is kept and backed up under `_headroomStatusLineBackup`), and provisions the `lib/` deps the badge needs to count savings (v2.7.1) |
 
 If you'd rather wire the status line by hand, the merge-aware installer lives in `skills/headroom-usage-indicator/SKILL.md`; the standalone entry it writes boils down to (with your real home directory in place of `~`):
 
@@ -156,7 +156,7 @@ New versions arrive through the plugin marketplace:
 /plugin update headroom-usage-indicator@headroom-tools
 ```
 
-The hooks, `hcat`, and the MCP definition update with the plugin — nothing to re-copy. The one exception is the status-line script, which runs from a copy at `~/.claude/headroom-statusline.sh`: if a release changes it, ask Claude to run the doctor once and it refreshes the copy. Legacy (pre-v2.5) manual installs get none of this for free — every update means re-running the installer, which is one more reason to migrate.
+The hooks, `hcat`, and the MCP definition update with the plugin — nothing to re-copy. The one exception is the status-line script, which runs from a copy at `~/.claude/headroom-statusline.sh` (plus its `~/.claude/lib/` deps): if a release changes it, ask Claude to run the doctor once and it refreshes the copy and the deps. **Coming from v2.7.0 or earlier, run `/headroom-usage-indicator:doctor --fix` once after updating** — earlier installs never provisioned the badge's `lib/` deps, so it was stuck reporting zero savings until you do ([#2](https://github.com/Ship-Wright/headroom-plugin/issues/2), fixed in v2.7.1). Legacy (pre-v2.5) manual installs get none of this for free — every update means re-running the installer, which is one more reason to migrate.
 
 ## Uninstall
 
@@ -194,6 +194,8 @@ The status-line copy (`~/.claude/headroom-statusline.sh`) stays — that one is 
 **It always says "idle" — why?**
 Most likely the headroom engine isn't installed or the MCP isn't loading. Ask Claude to **run the headroom doctor** — it checks each link in the chain and tells you which one is broken. (Manual check: `mcp__headroom__headroom_compress` should exist in your session's tools.)
 
+If the engine *is* working and `hcat` is clearly compressing (you see receipts in the transcript) but the badge **still** sits at idle showing zero, the status-line script is missing its runtime deps. The badge runs from a copy at `~/.claude/headroom-statusline.sh` and reads `attribution.jq` + `headroom-state.sh` from `~/.claude/lib/` next to it; without them it silently degrades to zero. Run **`/headroom-usage-indicator:doctor --fix`** — it (re)installs those deps and the badge starts reporting real totals. (Fixed in **v2.7.1** — earlier installs never provisioned them; [#2](https://github.com/Ship-Wright/headroom-plugin/issues/2).)
+
 **It says "▲ headroom broken" — what now?**
 That's different from idle: a hook or `hcat` recorded a real engine failure in the last 24h (not "never installed" — "resolved and then broken", e.g. a bad `HCAT_PYTHON` or a half-created venv). Run `/doctor` — it explains the specific failure and, once the underlying issue is fixed, clears the recorded state and restores the badge.
 
@@ -228,7 +230,7 @@ Do **not** run the legacy installer if the plugin is installed — you'd registe
 - `skills/doctor/SKILL.md` — the doctor: checks `jq`, the engine, the MCP, the hooks, the status line, and ambient-health state; fixes what you consent to, including legacy-install and project-settings cleanup.
 - `hooks/hooks.json` — plugin-native registration for session-probe (SessionStart), the hcat gate (PreToolUse), Dangi (PostToolUse), and the session ledger (Stop, SessionEnd).
 - `bin/hcat` — compress-at-the-source, on Claude's PATH while the plugin is enabled; falls back to a lossless TOON-lite (jq-only) rendering when the Python engine is absent.
-- `scripts/` — `statusline.sh`, `dangi-hook.sh`, `hcat-gate.sh`, `session-probe.sh`, `ledger-hook.sh`, `doctor.sh`, `mcp-launcher.sh` (the working parts).
+- `scripts/` — `statusline.sh`, `dangi-hook.sh`, `hcat-gate.sh`, `session-probe.sh`, `ledger-hook.sh`, `doctor.sh`, `mcp-launcher.sh` (the working parts), plus `scripts/lib/` (`attribution.jq`, `headroom-state.sh` — shared deps the installer copies next to the status-line script).
 - `data/model-prices.json` — the badge's price table as data; adding a model is an edit here, not a code change.
 - `.mcp.json` — bundled headroom MCP server definition (the launcher finds your engine).
 - `test.sh` — the synthetic-transcript test suite; run it from the repo root.
