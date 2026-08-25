@@ -1017,6 +1017,72 @@ neg_case "attachment without toolUseID" sess-gw6 gw6 "$(jq -cn '{type:"attachmen
 neg_case "non-string command (number)" sess-gw7 gw7 "$(gate_att gw7 hook_success PreToolUse '42')"
 neg_case "non-string command (array)"  sess-gw8 gw8 "$(gate_att gw8 hook_success PreToolUse '["ls","-la"]')"
 
+# --- a receipt proves an hcat RUN, not that anything was compressed ---------
+# hcat emits a "passthrough" receipt (no `~B tok → ~A tok` arrow) for
+# incompressible content, and those raw bytes DO land in the context window.
+# Savings accounting already required the arrow; the missed-opportunity counter
+# did not, so a LARGE passthrough scored as neither a save nor a miss and the
+# nudge went quiet on output that genuinely flooded the window.
+pass_event() {  # pass_event <id> <command> [pad-bytes] — passthrough receipt, no arrow
+  local pad=""
+  [ -n "${3:-}" ] && pad=$(head -c "$3" /dev/zero | tr '\0' 'y')
+  jq -cn --arg id "$1" --arg cmd "$2" --arg now "$NOW" \
+    '{timestamp:$now,message:{content:[{type:"tool_use",id:$id,name:"Bash",input:{command:$cmd}}]}}'
+  jq -cn --arg id "$1" --arg pad "$pad" \
+    '{message:{content:[{type:"tool_result",tool_use_id:$id,content:[{type:"text",
+      text:("── hcat: /tmp/y.txt · 3 lines · 200.0 KB · passthrough (compression would save 0.0%)\n" + $pad)}]}]}}'
+}
+# model-invoked hcat that passed through, LARGE: the bytes arrived raw -> a miss
+pass_event pt1 'hcat "/tmp/y.txt"' 6000 > "$TMP/t_pass_big.jsonl"
+out=$(badge "$TMP/t_pass_big.jsonl" claude-opus-4-8 sess-pt1)
+check        "passthrough: a large passthrough is counted as a miss" "uncompressed" "$out"
+check_absent "passthrough: it banks no savings"                      "●"            "$out"
+# gate-rewritten cat whose hcat passed through: same rule, same answer
+{ jq -cn --arg now "$NOW" '{timestamp:$now,message:{content:[{type:"tool_use",id:"pt2",name:"Bash",input:{command:"cat /tmp/y.txt"}}]}}'
+  gate_att pt2 hook_success PreToolUse '"hcat \"/tmp/y.txt\""'
+  jq -cn --arg pad "$(head -c 6000 /dev/zero | tr '\0' 'y')" \
+    '{message:{content:[{type:"tool_result",tool_use_id:"pt2",content:[{type:"text",
+      text:("── hcat: /tmp/y.txt · 3 lines · 200.0 KB · passthrough (compression would save 0.0%)\n" + $pad)}]}]}}'
+} > "$TMP/t_pass_gate.jsonl"
+out=$(badge "$TMP/t_pass_gate.jsonl" claude-opus-4-8 sess-pt2)
+check "passthrough: a gate-rewritten passthrough is a miss too" "uncompressed" "$out"
+# ...but a large REAL compression stays exempt (guards the over-correction)
+hcat_event pt3 9000 3000 6000 > "$TMP/t_pass_real.jsonl"
+out=$(badge "$TMP/t_pass_real.jsonl" claude-opus-4-8 sess-pt3)
+check_absent "passthrough: a large real compression is still not a miss" "uncompressed" "$out"
+check        "passthrough: and still banks its savings"                  "6.0k"         "$out"
+
+# --- remaining branches of gate_rewritten_ids ------------------------------
+# stdout that is not JSON at all must hit `try fromjson catch null` and be
+# skipped cleanly, never abort the pass (the genuine event proves it rendered).
+{ hcat_event keep2 1000 400
+  jq -cn --arg now "$NOW" '{timestamp:$now,message:{content:[{type:"tool_use",id:"mf1",name:"Bash",input:{command:"cat /tmp/x.json"}}]}}'
+  jq -cn '{type:"attachment",attachment:{type:"hook_success",hookName:"PreToolUse:Bash",hookEvent:"PreToolUse",toolUseID:"mf1",stderr:"",exitCode:0,stdout:"this is not json {{{"}}'
+  jq -cn '{message:{content:[{type:"tool_result",tool_use_id:"mf1",content:[{type:"text",text:"── hcat: /tmp/x.json · 10 lines · 5.0 KB · ~1000 tok → ~400 tok (60.0% saved) · original on disk"}]}]}}'
+} > "$TMP/t_malformed.jsonl"
+out=$(badge "$TMP/t_malformed.jsonl" claude-opus-4-8 sess-mf1)
+check        "rewrite: non-JSON hook stdout is skipped, pass still renders" "600" "$out"
+check        "rewrite: non-JSON hook stdout attributes nothing extra"       "1×"  "$out"
+check_absent "rewrite: non-JSON hook stdout not double-counted"             "2×"  "$out"
+
+# an id in BOTH halves of the union (model ran hcat AND the gate logged a
+# rewrite for the same tool_use) must count once — idset() dedupes, unpinned until now.
+{ hcat_event dup 1000 400
+  gate_att dup hook_success PreToolUse '"hcat \"/tmp/x.json\""'
+} > "$TMP/t_dup.jsonl"
+out=$(badge "$TMP/t_dup.jsonl" claude-opus-4-8 sess-dup)
+check        "rewrite: id in both halves counts once"      "1×"  "$out"
+check_absent "rewrite: id in both halves is not doubled"   "2×"  "$out"
+check        "rewrite: id in both halves banks 600 once"   "600" "$out"
+
+# a legacy absolute-path rewrite (`/abs/hcat "file"`) must still be recognised
+{ jq -cn --arg now "$NOW" '{timestamp:$now,message:{content:[{type:"tool_use",id:"lg1",name:"Bash",input:{command:"cat /tmp/x.json"}}]}}'
+  gate_att lg1 hook_success PreToolUse '"/Users/someone/.claude/hcat \"/tmp/x.json\""'
+  jq -cn '{message:{content:[{type:"tool_result",tool_use_id:"lg1",content:[{type:"text",text:"── hcat: /tmp/x.json · 10 lines · 5.0 KB · ~1000 tok → ~400 tok (60.0% saved) · original on disk"}]}]}}'
+} > "$TMP/t_legacy_rw.jsonl"
+out=$(badge "$TMP/t_legacy_rw.jsonl" claude-opus-4-8 sess-lg1)
+check "rewrite: legacy absolute-path hcat rewrite is attributed" "600" "$out"
+
 # dangi, same attack: quoting a receipt in a grep is still a missed opportunity...
 out=$(jq -n '{hook_event_name:"PostToolUse", tool_name:"Bash", session_id:"rev-d1",
   tool_input:{command:"grep -rn hcat-header notes"},

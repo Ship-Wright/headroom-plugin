@@ -17,6 +17,18 @@ def txt: (.content | if type=="string" then .
 
 def is_receipt: test("(^|\\n)── hcat: ");
 
+# A receipt PROVES an hcat run happened; it does not prove anything was
+# compressed. hcat emits a "passthrough" receipt (no `~B tok → ~A tok` arrow)
+# when content is incompressible, and in that case the raw bytes DID enter the
+# context window. Savings accounting already requires the arrow, but the
+# missed-opportunity counter used to exempt any receipt — so a large
+# passthrough scored as neither a save nor a miss and the nudge went quiet on
+# output that genuinely flooded the window. Use this, not a bare receipt, to
+# decide whether a blob was actually spared.
+def is_compressed_receipt:
+  (if type == "string" then . else "" end)
+  | test("~[0-9]+ tok → ~[0-9]+ tok");
+
 # A command "invokes hcat" when the hcat word sits in command position
 # (start/newline/pipe/;/&/subshell/absolute path). The second alternative
 # tolerates the whole-command quoted form ("hcat" "file", "/abs/hcat" "file")
