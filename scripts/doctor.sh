@@ -345,26 +345,32 @@ else
   if [ "$SETTINGS_OK" -eq 0 ]; then
     say skip "statusLine (settings.json unparseable — repair it first)"
   elif printf '%s' "$sl" | grep -q "headroom-statusline"; then
-    # settings.json points at the badge, but a bare string match is not proof the
-    # script is on disk. If the wired copy is missing the statusLine renders nothing,
-    # yet 7b/7c would only `skip` (guarded on the same absent file) and block 9 would
-    # then clear any recorded failure — a silent pass. Require the file to exist.
-    if [ -f "$CLAUDE_DIR/headroom-statusline.sh" ]; then
-      say ok "statusLine wired ($sl)"
-    elif [ "$FIX" -eq 1 ]; then
-      mkdir -p "$CLAUDE_DIR/lib"
-      cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
-      cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" 2>/dev/null || true
-      [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
-        && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
-      if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$CLAUDE_DIR/headroom-statusline.sh" \
-         && chmod +x "$CLAUDE_DIR/headroom-statusline.sh"; then
-        say fixed "re-copied the missing statusline script to $CLAUDE_DIR/headroom-statusline.sh (settings already pointed at it)"
+    # A bare string match is not proof the script is on disk. Only second-guess OUR
+    # canonical path ($CLAUDE_DIR/headroom-statusline.sh — what the installer and
+    # --fix write): if that's the wired target but it's missing, the badge renders
+    # nothing while 7b/7c only `skip` (guarded on the same absent file) and block 9
+    # clears any recorded failure — a silent pass. A headroom-statusline.sh wired at
+    # some OTHER (hand-edited) path is theirs to own: trust it rather than cry wolf
+    # or drop an orphan copy at the canonical path settings don't reference.
+    if printf '%s' "$sl" | grep -qF "$CLAUDE_DIR/headroom-statusline.sh" \
+       && [ ! -f "$CLAUDE_DIR/headroom-statusline.sh" ]; then
+      if [ "$FIX" -eq 1 ]; then
+        mkdir -p "$CLAUDE_DIR/lib"
+        cp "$PLUGIN_ROOT/scripts/lib/attribution.jq"    "$CLAUDE_DIR/lib/" 2>/dev/null || true
+        cp "$PLUGIN_ROOT/scripts/lib/headroom-state.sh" "$CLAUDE_DIR/lib/" 2>/dev/null || true
+        [ -f "$PLUGIN_ROOT/data/model-prices.json" ] \
+          && cp "$PLUGIN_ROOT/data/model-prices.json" "$CLAUDE_DIR/headroom-model-prices.json" 2>/dev/null || true
+        if cp "$PLUGIN_ROOT/scripts/statusline.sh" "$CLAUDE_DIR/headroom-statusline.sh" \
+           && chmod +x "$CLAUDE_DIR/headroom-statusline.sh"; then
+          say fixed "re-copied the missing statusline script to $CLAUDE_DIR/headroom-statusline.sh (settings already pointed at it)"
+        else
+          say FAIL "could not re-copy statusline.sh to $CLAUDE_DIR/headroom-statusline.sh"
+        fi
       else
-        say FAIL "could not re-copy statusline.sh to $CLAUDE_DIR/headroom-statusline.sh"
+        say fixable "statusLine points at $CLAUDE_DIR/headroom-statusline.sh but the script is missing — --fix re-copies it"
       fi
     else
-      say fixable "statusLine points at headroom-statusline.sh but the script is missing from $CLAUDE_DIR — --fix re-copies it"
+      say ok "statusLine wired ($sl)"
     fi
   elif [ "$FIX" -eq 1 ]; then
     mkdir -p "$CLAUDE_DIR"
