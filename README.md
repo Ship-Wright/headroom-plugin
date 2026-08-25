@@ -56,7 +56,7 @@ Every second, it looks at what your Claude session has actually done and updates
 | `○ headroom idle (not compressing yet)` — or `○ headroom idle · 4 big blobs uncompressed` | 🔴 red | headroom hasn't compressed anything yet this session; the count appears when large tool outputs are going uncompressed |
 | `● headroom · ~2.4k tok · $0.01 · 3× \| $1.83 all-time  😴 dangi` | 🟢 green | a compression just happened — tokens saved, **money saved**, how many times, and your all-time total |
 | `○ headroom idle · ~2.4k tok · $0.01 · 3× · 2 missed \| $1.83 all-time  🤖 dangi: 2!` | ⚪ grey | quiet for 60s — dims, but keeps the totals; `· N missed` counts big results beyond what you've compressed |
-| `▲ headroom broken (engine) · run /doctor` | 🟡 yellow | a hook or `hcat` just recorded a real engine failure — takes over the badge until a clean `/doctor` run (or the next successful `hcat`) clears it (v2.7) |
+| `▲ headroom broken (engine) · run /doctor` | 🟡 yellow | a hook or `hcat` just recorded a real engine failure — takes over the badge until a clean `/headroom-usage-indicator:doctor` run (or the next successful `hcat`) clears it (v2.7) |
 
 - The **token count is the running total for the whole session** (it adds up every compression).
 - It **resets to red** when you start a brand-new Claude session.
@@ -114,8 +114,8 @@ Every layer above fails *silently* by design — a hook that prints anything but
 
 - Hooks and `hcat` record genuine engine failures (not "never installed" — "resolved and then broken") as `<epoch> <component> <message>` in `$STATE_DIR/last-error`.
 - A fresh entry (under 24h old) takes over the badge: `▲ headroom broken (<component>) · run /doctor`, in yellow, replacing the usual active/idle state.
-- `hcat` clears its own `engine`/`runtime` errors the instant a compression actually succeeds; `/doctor` clears the file on a fully clean run and reports "cleared recorded failure state — badge restored".
-- A new **SessionStart** hook, `scripts/session-probe.sh`, runs a fast subset of the doctor's checks once per session — `jq` present, `hcat` executable, engine python resolvable (existence only; the import itself is checked at use time by the gate/hcat), the bundled price table parses — and stays silent when everything's fine. A genuinely never-installed engine still gets a friendly one-line pointer to `/doctor --fix`; that alone does **not** flip the badge to broken (it's the ordinary idle state, not a breakage).
+- `hcat` clears its own `engine`/`runtime` errors the instant a compression actually succeeds; `/headroom-usage-indicator:doctor` clears the file on a fully clean run and reports "cleared recorded failure state — badge restored".
+- A new **SessionStart** hook, `scripts/session-probe.sh`, runs a fast subset of the doctor's checks once per session — `jq` present, `hcat` executable, engine python resolvable (existence only; the import itself is checked at use time by the gate/hcat), the bundled price table parses — and stays silent when everything's fine. A genuinely never-installed engine still gets a friendly one-line pointer to `/headroom-usage-indicator:doctor --fix`; that alone does **not** flip the badge to broken (it's the ordinary idle state, not a breakage).
 - **v2.7.2 — setup nudge:** when everything else is healthy but the **status line isn't wired yet** (the one manual step — a plugin can't register a status line itself), the probe emits a one-line `🤖 headroom setup: … run /headroom-usage-indicator:doctor --fix to show it`. This is why a fresh install no longer leaves you wondering where the badge is — it tells you the remaining step. It's a reminder, not a breakage (no `last-error`, no yellow badge), it defers to any real problem, and it goes silent the moment the status line is wired. The same nudge fires if the status line is wired but its `lib/` deps are missing (the [#2](https://github.com/Abhi902/headroom-plugin/issues/2) shape — badge would read zero).
 
 ## Session ledger + next-session invoice (v2.7)
@@ -198,7 +198,7 @@ Most likely the headroom engine isn't installed or the MCP isn't loading. Ask Cl
 If the engine *is* working and `hcat` is clearly compressing (you see receipts in the transcript) but the badge **still** sits at idle showing zero, the status-line script is missing its runtime deps. The badge runs from a copy at `~/.claude/headroom-statusline.sh` and reads `attribution.jq` + `headroom-state.sh` from `~/.claude/lib/` next to it; without them it silently degrades to zero. Run **`/headroom-usage-indicator:doctor --fix`** — it (re)installs those deps and the badge starts reporting real totals. (Fixed in **v2.7.1** — earlier installs never provisioned them; [#2](https://github.com/Abhi902/headroom-plugin/issues/2).)
 
 **It says "▲ headroom broken" — what now?**
-That's different from idle: a hook or `hcat` recorded a real engine failure in the last 24h (not "never installed" — "resolved and then broken", e.g. a bad `HCAT_PYTHON` or a half-created venv). Run `/doctor` — it explains the specific failure and, once the underlying issue is fixed, clears the recorded state and restores the badge.
+That's different from idle: a hook or `hcat` recorded a real engine failure in the last 24h (not "never installed" — "resolved and then broken", e.g. a bad `HCAT_PYTHON` or a half-created venv). Run `/headroom-usage-indicator:doctor` — it explains the specific failure and, once the underlying issue is fixed, clears the recorded state and restores the badge.
 
 **Do I still have to remember to compress things?**
 Less than you used to. The hcat gate redirects big structured-file reads automatically, and Dangi nudges Claude about the rest. The badge is the honest scorekeeper on top.

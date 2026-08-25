@@ -121,14 +121,14 @@ if [ -n "$py" ]; then
   # (An engine that was never installed is NOT recorded: that is the ordinary
   # red-idle state, not a breakage.)
   if [ ! -x "$py" ]; then
-    note_error engine "engine python not executable ($py) — gate failing open; run /doctor"
+    note_error engine "engine python not executable ($py) — gate failing open; run /headroom-usage-indicator:doctor"
     exit 0
   fi
   # A half-created venv passes -x yet cannot `import headroom` (hcat exits 4)
   # — verify the import and fail OPEN (allow the Read) on a broken engine.
   # Only runs on the rare deny path, so the interpreter spawn is fine.
   if ! "$py" -c 'import headroom' >/dev/null 2>&1; then
-    note_error engine "engine import failed ($py) — gate failing open; run /doctor"
+    note_error engine "engine import failed ($py) — gate failing open; run /headroom-usage-indicator:doctor"
     exit 0
   fi
 else

@@ -483,7 +483,7 @@ if [ "$HEALTH_HAD_ERROR" -eq 1 ]; then
       rm -f "$HEALTH_STATE_DIR/last-error" 2>/dev/null || true
       say ok "cleared recorded failure state — badge restored"
     else
-      say skip "a NEW failure was recorded while this run was in progress — badge kept broken; run /doctor again"
+      say skip "a NEW failure was recorded while this run was in progress — badge kept broken; run /headroom-usage-indicator:doctor again"
     fi
   else
     say skip "recorded failure state kept (badge shows broken until a clean doctor run)"

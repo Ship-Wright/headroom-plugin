@@ -349,6 +349,11 @@ printf '{"k":1}' > "$TMP/hc_small.json"
 out=$(HCAT_PYTHON=/nonexistent/python bash "$HCAT" "$TMP/hc_small.json" 2>/dev/null); rc=$?
 check_eq "hcat: no headroom → exit 3" "3" "$rc"
 check_absent "hcat: no headroom → stdout empty" "{" "$out"
+# 23b. the recorded last-error message must name the real doctor command --
+# regression guard for the bug this suite's own history shows a green run can
+# miss: bin/hcat:106's engine-not-executable message once said bare "/doctor".
+check "hcat: engine-error last-error names real doctor command" "headroom-usage-indicator:doctor" \
+      "$(cat "$HEADROOM_STATE_DIR/last-error" 2>/dev/null)"
 
 if [ -n "$HEADROOM_PY" ]; then
   # 24. real compression: big structured JSON shrinks, header cites source path
@@ -377,6 +382,27 @@ PYEOF
 else
   echo "skip - hcat compression tests (headroom venv not found)"
 fi
+
+# 25b. static regression guard: the doctor command name stays correct in
+# spots this suite cannot exercise dynamically without a live engine
+# exception (bin/hcat's Python-side compression-failure message) or that
+# are pure documentation (skills/headroom-usage-indicator/SKILL.md,
+# README.md). All four were, at one point in this PR's history, still
+# pointing at the nonexistent bare "/doctor" command while the rest of the
+# suite stayed green -- these checks read the shipped source/docs directly.
+check "hcat: python compression-failure message names real doctor command" \
+      "run /headroom-usage-indicator:doctor" "$(grep 'compression failed' "$HCAT")"
+
+USAGE_SKILL="$ROOT/skills/headroom-usage-indicator/SKILL.md"
+usage_skill_content=$(cat "$USAGE_SKILL" 2>/dev/null)
+check "usage-indicator skill: frontmatter names real doctor command" \
+      "until /headroom-usage-indicator:doctor clears it" "$usage_skill_content"
+check "usage-indicator skill: broken-badge bullet names real doctor command" \
+      "a clean \`/headroom-usage-indicator:doctor\` run" "$usage_skill_content"
+
+readme_content=$(cat "$ROOT/README.md" 2>/dev/null)
+check "README: broken-badge table names real doctor command" \
+      "a clean \`/headroom-usage-indicator:doctor\` run" "$readme_content"
 
 # --- 26-28. hcat-gate (PreToolUse Read gate)
 GATE="$ROOT/scripts/hcat-gate.sh"
